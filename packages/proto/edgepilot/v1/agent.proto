@@ -1,0 +1,503 @@
+// EdgePilot device plane — the contract between the macOS agent and the server.
+//
+// One long-lived bidirectional stream carries everything: heartbeats, telemetry,
+// inventory, command dispatch and results, file transfer, log collection, SSH
+// tunnel bytes, and certificate renewal.
+//
+// Compatibility rules for this file:
+//   * Field numbers are permanent. Removing a field means `reserved`, never reuse.
+//   * New oneof arms are additive; a peer that does not recognise an arm must
+//     ignore the message rather than terminate the stream.
+//   * Enums always keep a zero-valued *_UNSPECIFIED member, so an unset field is
+//     distinguishable from a deliberate first value.
+
+syntax = "proto3";
+
+package edgepilot.v1;
+
+option go_package = "github.com/visionify/edgepilot/packages/proto/gen/edgepilot/v1;edgepilotv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+service AgentService {
+  // The single stream every agent holds open. Transport is mTLS; the client
+  // certificate's SPIFFE SAN carries the device UUID, so there is no
+  // application-level device credential to leak or replay.
+  //
+  // Enrollment is deliberately NOT on this service: an unenrolled agent has no
+  // client certificate and therefore cannot reach this port at all. It uses
+  // POST /api/v1/agent/enroll on the REST listener.
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+}
+
+// ---------------------------------------------------------------------------
+// Envelopes
+// ---------------------------------------------------------------------------
+
+message AgentMessage {
+  // Monotonic per-connection sequence. The server acks durable messages by seq;
+  // the agent replays unacked ones after a reconnect. Handling is idempotent on
+  // (device_id, seq), so replay is always safe.
+  uint64 seq = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  // W3C traceparent, so a command's path through server and agent is one trace.
+  string traceparent = 3;
+
+  oneof payload {
+    Hello               hello                = 10;
+    Heartbeat           heartbeat            = 11;
+    MetricsSample       metrics              = 12;
+    InventoryReport     inventory            = 13;
+    CommandProgress     command_progress     = 14;
+    CommandResult       command_result       = 15;
+    FileChunk           file_chunk           = 16;
+    FileListing         file_listing         = 17;
+    FileOperationResult file_operation_result = 18;
+    TunnelOpened        tunnel_opened        = 19;
+    TunnelData          tunnel_data          = 20;
+    TunnelClosed        tunnel_closed        = 21;
+    DeploymentProgress  deployment_progress  = 22;
+    LogStreamChunk      log_stream_chunk     = 23;
+    CertificateRequest  certificate_request  = 24;
+    DeviceEvent         event                = 25;
+    Ack                 ack                  = 26;
+    Pong                pong                 = 27;
+  }
+}
+
+message ServerMessage {
+  uint64 seq = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  string traceparent = 3;
+
+  oneof payload {
+    Welcome             welcome              = 10;
+    ConfigUpdate        config               = 11;
+    CommandRequest      command              = 12;
+    CommandCancel       command_cancel       = 13;
+    FileOperation       file_operation       = 14;
+    FileChunk           file_chunk           = 15;
+    TunnelOpen          tunnel_open          = 16;
+    TunnelData          tunnel_data          = 17;
+    TunnelClose         tunnel_close         = 18;
+    DeploymentTask      deployment           = 19;
+    LogStreamRequest    log_stream_request   = 20;
+    CertificateResponse certificate          = 21;
+    Ack                 ack                  = 22;
+    Ping                ping                 = 23;
+    Disconnect          disconnect           = 24;
+  }
+}
+
+message Ack {
+  uint64 acked_seq = 1;
+}
+message Ping { uint64 nonce = 1; }
+message Pong { uint64 nonce = 1; }
+
+// Sent before the server closes a stream deliberately, so the agent can
+// distinguish "go away and back off" from a network fault.
+message Disconnect {
+  enum Reason {
+    REASON_UNSPECIFIED     = 0;
+    REASON_SHUTTING_DOWN   = 1;  // replica draining; reconnect immediately
+    REASON_REBALANCE       = 2;  // reconnect after jitter
+    REASON_DEVICE_REVOKED  = 3;  // terminal; stop and log
+    REASON_DEVICE_DELETED  = 4;  // terminal; wipe local state
+    REASON_PROTOCOL_ERROR  = 5;
+    REASON_UNAUTHENTICATED = 6;
+  }
+  Reason reason        = 1;
+  string message       = 2;
+  uint32 retry_after_s = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Session establishment
+// ---------------------------------------------------------------------------
+
+message Hello {
+  string agent_version = 1;
+  // Random per process start. Lets the server distinguish a reconnect from a
+  // restart, which is what makes the agent_stopped alert accurate.
+  string boot_id       = 2;
+  // Highest server seq the agent durably processed, for resume after reconnect.
+  uint64 last_seq_seen = 3;
+  // Sent on every connect because these change without an inventory refresh.
+  string hostname      = 4;
+  string os_version    = 5;
+  string os_build      = 6;
+  string local_ip      = 7;
+  google.protobuf.Timestamp booted_at = 8;
+  // Checksums of the inventory sections the agent currently holds. The server
+  // replies in Welcome with only the sections it needs re-sent.
+  map<string, bytes> inventory_checksums = 9;
+  // Durable messages buffered on disk while disconnected, so the server can size
+  // its ingest window.
+  uint32 spooled_messages = 10;
+}
+
+message Welcome {
+  google.protobuf.Timestamp server_time = 1;
+  string device_id      = 2;
+  string org_id         = 3;
+  // False while enrollment_state = 'pending': the agent connects and reports,
+  // but the server will dispatch no commands and the agent refuses any it sees.
+  bool   approved       = 4;
+  ConfigUpdate config   = 5;
+  // Inventory sections whose checksums did not match; the agent re-sends only these.
+  repeated string request_inventory = 6;
+  // Server seq to resume from; the agent replays durable messages after this.
+  uint64 resume_from_seq = 7;
+}
+
+// Pushed at connect and whenever policy changes. The agent applies it atomically
+// and persists it, so a restart while offline keeps the last known policy.
+message ConfigUpdate {
+  uint32 heartbeat_interval_s   = 1;
+  uint32 metrics_interval_s     = 2;
+  uint32 inventory_interval_s   = 3;
+  // Hard local policy. When false the agent refuses custom_script even if the
+  // payload carries a valid server signature.
+  bool   allow_custom_scripts   = 4;
+  // Slugs this device will accept. Anything outside this set is refused locally.
+  repeated string enabled_command_slugs = 5;
+  // Reconciled verbatim into the agent-owned authorized_keys file.
+  repeated AuthorizedKey authorized_keys = 6;
+  uint32 max_concurrent_commands = 7;
+  uint64 spool_max_bytes         = 8;
+  // Roots the agent trusts for artifact and agent-release signatures. Rotation
+  // is additive: a new key is distributed before the old one is withdrawn.
+  repeated bytes signing_public_keys = 9;
+  // Log level for the agent's own logging.
+  string log_level = 10;
+}
+
+message AuthorizedKey {
+  string key_id          = 1;
+  string public_key      = 2;   // full authorized_keys line body
+  string target_username = 3;
+  google.protobuf.Timestamp expires_at = 4;  // written as expiry-time=, enforced by sshd
+  repeated string options = 5;               // no-port-forwarding, no-agent-forwarding, ...
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry
+// ---------------------------------------------------------------------------
+
+message Heartbeat {
+  uint64 uptime_seconds        = 1;
+  uint32 active_command_count  = 2;
+  uint32 spooled_message_count = 3;
+}
+
+message MetricsSample {
+  google.protobuf.Timestamp collected_at = 1;
+
+  float  cpu_percent        = 2;
+  float  cpu_user_percent   = 3;
+  float  cpu_system_percent = 4;
+  float  load_1             = 5;
+  float  load_5             = 6;
+  float  load_15            = 7;
+
+  uint64 memory_used_bytes  = 8;
+  uint64 memory_total_bytes = 9;
+  float  memory_pressure    = 10;
+  uint64 swap_used_bytes    = 11;
+
+  uint64 disk_used_bytes    = 12;
+  uint64 disk_total_bytes   = 13;
+  uint64 disk_read_bytes    = 14;   // monotonic since boot
+  uint64 disk_write_bytes   = 15;
+
+  uint64 net_rx_bytes       = 16;   // monotonic since boot
+  uint64 net_tx_bytes       = 17;
+
+  // Absent on hardware with no readable SMC sensor; consumers must handle absence
+  // rather than substituting zero.
+  optional float temperature_c = 18;
+  uint64 uptime_seconds     = 19;
+  uint32 process_count      = 20;
+
+  // Top processes by CPU then memory, capped server-side. Held in Redis with a
+  // short TTL for the live view and never written to Postgres.
+  repeated ProcessSample top_processes = 21;
+}
+
+message ProcessSample {
+  int32  pid           = 1;
+  string name          = 2;
+  string user          = 3;
+  float  cpu_percent   = 4;
+  uint64 memory_bytes  = 5;
+  uint64 threads       = 6;
+  google.protobuf.Timestamp started_at = 7;
+}
+
+message InventoryReport {
+  google.protobuf.Timestamp collected_at = 1;
+  repeated InventorySection sections = 2;
+}
+
+message InventorySection {
+  // system | hardware | network | storage | applications | services | security | peripherals
+  string kind     = 1;
+  // Canonical JSON. Schemas live in packages/shared/openapi and are versioned
+  // with the API, so the dashboard renders sections without agent-version checks.
+  bytes  payload  = 2;
+  bytes  checksum = 3;  // SHA-256 of payload; unchanged sections are omitted entirely
+}
+
+message DeviceEvent {
+  google.protobuf.Timestamp occurred_at = 1;
+  string event_type = 2;   // agent.started, service.failed, disk.pressure, ...
+  string severity   = 3;   // debug | info | warning | error | critical
+  string message    = 4;
+  bytes  attributes = 5;   // canonical JSON
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+message CommandRequest {
+  string command_id = 1;
+  // The agent maps this to a handler it was COMPILED WITH. The server never sends
+  // an argv, so a compromised server cannot achieve arbitrary execution — it can
+  // only invoke operations the agent already implements.
+  string slug       = 2;
+  bytes  params     = 3;   // canonical JSON, re-validated agent-side against its own schema
+  uint32 timeout_seconds = 4;
+  google.protobuf.Timestamp expires_at = 5;
+
+  // custom_script only.
+  string script_url      = 6;   // short-lived SAS URL
+  bytes  script_sha256   = 7;
+  // Ed25519 over (device_id || command_id || script_sha256 || expires_at),
+  // verified against a pinned key in ConfigUpdate.signing_public_keys.
+  bytes  script_signature = 8;
+}
+
+message CommandCancel {
+  string command_id = 1;
+  string reason     = 2;
+}
+
+message CommandProgress {
+  string command_id      = 1;
+  uint32 percent         = 2;
+  string phase           = 3;
+  bytes  stdout_delta    = 4;   // streamed incrementally for live output
+  bytes  stderr_delta    = 5;
+}
+
+message CommandResult {
+  string command_id  = 1;
+  uint32 attempt     = 2;
+  optional int32 exit_code = 3;
+  bytes  stdout      = 4;   // capped; overflow goes to object storage
+  bytes  stderr      = 5;
+  bool   truncated   = 6;
+  string stdout_object_key = 7;
+  string stderr_object_key = 8;
+  uint64 duration_ms = 9;
+  // Set when execution never produced an exit code.
+  // unknown_slug | policy_refused | signature_invalid | checksum_mismatch |
+  // timeout | not_approved | expired | schema_invalid | internal
+  string error_code    = 10;
+  string error_message = 11;
+}
+
+// ---------------------------------------------------------------------------
+// File manager
+// ---------------------------------------------------------------------------
+
+message FileOperation {
+  string operation_id = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_LIST        = 1;
+    KIND_STAT        = 2;
+    KIND_DOWNLOAD    = 3;  // device -> server
+    KIND_UPLOAD      = 4;  // server -> device
+    KIND_DELETE      = 5;
+    KIND_RENAME      = 6;
+    KIND_MKDIR       = 7;
+  }
+  Kind   kind         = 2;
+  string path         = 3;
+  string destination  = 4;   // rename target
+  bool   recursive    = 5;
+  // Upload/download move bytes over a SAS URL rather than through this stream:
+  // a 2 GB transfer must not sit in the control path competing with heartbeats.
+  string transfer_url = 6;
+  bytes  expected_sha256 = 7;
+  uint32 mode         = 8;   // POSIX mode for mkdir/upload
+  string owner        = 9;
+}
+
+message FileOperationResult {
+  string operation_id  = 1;
+  bool   success       = 2;
+  string error_code    = 3;   // not_found | permission_denied | path_not_allowed |
+                              // exists | not_empty | disk_full | checksum_mismatch
+  string error_message = 4;
+  uint64 bytes_transferred = 5;
+  bytes  sha256        = 6;
+}
+
+message FileListing {
+  string operation_id = 1;
+  string path         = 2;
+  repeated FileEntry entries = 3;
+  bool   truncated    = 4;   // directory exceeded the per-listing cap
+}
+
+message FileEntry {
+  string name          = 1;
+  bool   is_dir        = 2;
+  bool   is_symlink    = 3;
+  string symlink_target = 4;
+  uint64 size_bytes    = 5;
+  uint32 mode          = 6;
+  string owner         = 7;
+  string group         = 8;
+  google.protobuf.Timestamp modified_at = 9;
+}
+
+// Used only for small in-band payloads (log tails, previews). Bulk transfer uses
+// transfer_url.
+message FileChunk {
+  string operation_id = 1;
+  uint64 offset       = 2;
+  bytes  data         = 3;
+  bool   last         = 4;
+}
+
+// ---------------------------------------------------------------------------
+// SSH tunnel
+// ---------------------------------------------------------------------------
+
+message TunnelOpen {
+  string tunnel_id  = 1;
+  // Always loopback sshd in practice. Constrained to an allowlist agent-side, so
+  // the tunnel cannot be repurposed into a general egress proxy through the Mac.
+  string target_host = 2;
+  uint32 target_port = 3;
+  string session_id  = 4;   // ssh_sessions.id, for correlation
+  uint32 idle_timeout_s = 5;
+}
+
+message TunnelOpened {
+  string tunnel_id = 1;
+  bool   success   = 2;
+  string error     = 3;
+}
+
+message TunnelData {
+  string tunnel_id = 1;
+  bytes  data      = 2;
+  // Per-tunnel monotonic counter; a gap means the tunnel is corrupt and both
+  // sides must tear it down rather than deliver reordered bytes to sshd.
+  uint64 sequence  = 3;
+}
+
+message TunnelClose {
+  string tunnel_id = 1;
+  string reason    = 2;
+}
+
+message TunnelClosed {
+  string tunnel_id  = 1;
+  string reason     = 2;
+  uint64 bytes_in   = 3;
+  uint64 bytes_out  = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Deployment
+// ---------------------------------------------------------------------------
+
+message DeploymentTask {
+  string deployment_id      = 1;
+  string package_version_id = 2;
+  string download_url       = 3;   // SAS URL, resumable
+  bytes  sha256             = 4;
+  bytes  signature          = 5;   // Ed25519, verified before anything is executed
+  string format             = 6;   // pkg | zip | tar.gz | dmg
+  bytes  install_spec       = 7;   // canonical JSON
+  uint64 size_bytes         = 8;
+  uint32 timeout_seconds    = 9;
+  // Set on a rollback so the agent can report the transition accurately.
+  string rollback_from_version_id = 10;
+}
+
+message DeploymentProgress {
+  string deployment_id = 1;
+  enum Phase {
+    PHASE_UNSPECIFIED = 0;
+    PHASE_QUEUED      = 1;
+    PHASE_DOWNLOADING = 2;
+    PHASE_VERIFYING   = 3;
+    PHASE_INSTALLING  = 4;
+    PHASE_COMPLETED   = 5;
+    PHASE_FAILED      = 6;
+    PHASE_ROLLED_BACK = 7;
+  }
+  Phase  phase            = 2;
+  uint32 percent          = 3;
+  uint64 bytes_downloaded = 4;
+  string error_code       = 5;
+  string error_message    = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Log collection
+// ---------------------------------------------------------------------------
+
+message LogStreamRequest {
+  string request_id = 1;
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_TAIL        = 1;  // live, streamed to the dashboard, never persisted
+    MODE_BUNDLE      = 2;  // collect, compress, upload via SAS URL
+  }
+  Mode   mode        = 2;
+  repeated string sources = 3;   // system | application | crash | agent | install | network
+  google.protobuf.Timestamp since = 4;
+  google.protobuf.Timestamp until = 5;
+  uint64 max_size_bytes = 6;
+  string predicate   = 7;   // validated allowlist subset of `log show --predicate`
+  string upload_url  = 8;   // MODE_BUNDLE
+}
+
+message LogStreamChunk {
+  string request_id = 1;
+  bytes  data       = 2;
+  bool   last       = 3;
+  bool   truncated  = 4;   // hit max_size_bytes
+  string error      = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Certificate renewal
+// ---------------------------------------------------------------------------
+//
+// Renewal happens over the already-authenticated stream at two thirds of the
+// certificate's lifetime, so it needs no enrollment token and no operator action.
+
+message CertificateRequest {
+  bytes csr = 1;   // DER-encoded PKCS#10
+}
+
+message CertificateResponse {
+  bytes  certificate_pem = 1;
+  bytes  ca_bundle_pem   = 2;
+  google.protobuf.Timestamp not_after = 3;
+  string error           = 4;
+}
