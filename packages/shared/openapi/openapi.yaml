@@ -1,0 +1,3065 @@
+openapi: 3.1.0
+
+info:
+  title: EdgePilot API
+  version: 1.0.0
+  summary: Fleet management for macOS devices deployed at customer sites.
+  description: |
+    The user plane of EdgePilot. The dashboard, `epctl`, and any CI integration
+    speak this API. Agents do **not** — they use the mTLS gRPC device plane
+    (`packages/proto/edgepilot/v1/agent.proto`), with the single exception of
+    `POST /agent/enroll`, which is how an agent obtains its client certificate in
+    the first place.
+
+    This document is the source of truth. The TypeScript client in
+    `apps/dashboard/src/lib/api` is generated from it, and the Go router is
+    contract-tested against it in CI, so an endpoint that drifts from this file
+    fails the build.
+
+    ## Conventions
+
+    - **Time** is RFC 3339 with a `Z` offset, always UTC.
+    - **IDs** are UUIDs. Devices, commands, and other insert-heavy resources use
+      UUIDv7, so IDs sort chronologically.
+    - **Errors** are RFC 9457 Problem Details (`application/problem+json`).
+    - **Pagination** is cursor-based. Offset pagination is deliberately absent:
+      it produces duplicates and gaps on a table receiving concurrent inserts,
+      which describes every list in this API.
+    - **Mutations** accept an `Idempotency-Key` header. Replaying a key within
+      24 h returns the original response instead of acting twice.
+    - **Tenancy** is implicit. Every request is scoped to the caller's
+      organization by their token; there is no `org_id` query parameter, and one
+      cannot be supplied.
+
+  contact:
+    name: Visionify Engineering
+    email: devteam@visionify.ai
+  license:
+    name: Proprietary — Visionify, Inc. All rights reserved.
+    identifier: LicenseRef-Visionify-Proprietary
+
+servers:
+  - url: https://{host}/api/v1
+    description: Deployment
+    variables:
+      host:
+        default: edgepilot.visionify.ai
+  - url: http://localhost:8080/api/v1
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Authentication
+    description: Login, token refresh, and the current principal.
+  - name: Devices
+    description: Fleet registry, inventory, and lifecycle.
+  - name: Enrollment
+    description: Enrollment tokens and the agent's certificate request.
+  - name: Metrics
+    description: Time-series telemetry and rollups.
+  - name: Commands
+    description: The allowlisted command catalogue, queue, approvals, and results.
+  - name: Files
+    description: Remote file browsing and transfer.
+  - name: Deployments
+    description: Software packages, versions, rollouts, and rollback.
+  - name: Logs
+    description: Log collection, download, and structured device events.
+  - name: SSH
+    description: Key management, connection issuance, and session history.
+  - name: Alerts
+    description: Alert rules and firing alerts.
+  - name: Users
+    description: Users, roles, and permissions.
+  - name: Audit
+    description: The tamper-evident audit log.
+  - name: Agent Releases
+    description: Signed agent versions and staged rollout.
+  - name: System
+    description: Health, readiness, and realtime.
+
+# ===========================================================================
+paths:
+# ===========================================================================
+
+  # ---------------------------------------------------------------- Auth ---
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Exchange credentials for a token pair
+      operationId: login
+      security: []
+      description: |
+        On success the refresh token is set as an `HttpOnly; Secure;
+        SameSite=Strict` cookie and is **not** included in the response body.
+        The access token is returned in the body for the client to hold in
+        memory only. Storing either in `localStorage` turns any XSS into full
+        account takeover.
+
+        Failures are deliberately indistinguishable: an unknown email, a wrong
+        password, and a disabled account all return the same
+        `invalid_credentials` problem after the same constant-time work.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string, format: email }
+                password: { type: string, format: password, minLength: 12, maxLength: 256 }
+                mfa_code: { type: string, pattern: '^[0-9]{6}$', description: Required once MFA is enrolled. }
+                organization:
+                  type: string
+                  description: |
+                    Tenant slug. Credentials are scoped to an organization — the
+                    same email can belong to two customers — so a sign-in has to
+                    resolve one.
+
+                    Needed only where a deployment serves several tenants from a
+                    single hostname. Otherwise the organization is taken from
+                    the request's subdomain, or, in the common self-hosted case
+                    of exactly one organization, from that one.
+
+                    Supplying it selects a tenant; it grants nothing, because
+                    the password still has to match that tenant's record. An
+                    unknown slug fails as `invalid_credentials` rather than as
+                    "no such organization", which would tell an unauthenticated
+                    caller which tenants exist.
+      responses:
+        '200':
+          description: Authenticated.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: '`edgepilot_refresh=<opaque>; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '423':
+          description: Account locked after repeated failures.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '428':
+          description: MFA code required.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate the refresh token and mint a new access token
+      operationId: refreshToken
+      security: []
+      description: |
+        Refresh tokens are single-use. Each refresh issues a new token in the
+        same family and revokes the presented one. Presenting an already-rotated
+        token means it leaked, so the entire family is revoked and every session
+        derived from that login ends.
+      responses:
+        '200':
+          description: Rotated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke the current session
+      operationId: logout
+      responses:
+        '204': { description: Session revoked and cookie cleared. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/me:
+    get:
+      tags: [Authentication]
+      summary: The authenticated principal, with resolved permissions
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/password:
+    put:
+      tags: [Authentication]
+      summary: Change own password
+      operationId: changePassword
+      description: Revokes every other session belonging to the user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password:     { type: string, format: password, minLength: 12, maxLength: 256 }
+      responses:
+        '204': { description: Changed. }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ----------------------------------------------------------- Enrollment ---
+  /enrollment-tokens:
+    get:
+      tags: [Enrollment]
+      summary: List enrollment tokens
+      operationId: listEnrollmentTokens
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/EnrollmentToken' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Enrollment]
+      summary: Create an enrollment token
+      operationId: createEnrollmentToken
+      description: |
+        The plaintext token is returned exactly once, in this response. Only its
+        SHA-256 is persisted, so it cannot be recovered afterwards.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description, expires_at]
+              properties:
+                description:  { type: string, maxLength: 200 }
+                expires_at:   { type: string, format: date-time }
+                max_uses:     { type: [integer, 'null'], minimum: 1 }
+                auto_approve:
+                  type: boolean
+                  default: false
+                  description: |
+                    When false the device enrolls into `pending` and receives no
+                    commands until an admin approves it. This is the correct
+                    default for production sites.
+                labels:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/EnrollmentToken'
+                  - type: object
+                    required: [token]
+                    properties:
+                      token:
+                        type: string
+                        description: Shown once. Never retrievable again.
+                        examples: ['ep_enroll_9f3a2c1e8b7d6a5f4e3d2c1b0a998877']
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /enrollment-tokens/{tokenId}:
+    delete:
+      tags: [Enrollment]
+      summary: Revoke an enrollment token
+      operationId: revokeEnrollmentToken
+      parameters:
+        - $ref: '#/components/parameters/TokenId'
+      responses:
+        '204': { description: Revoked. Devices already enrolled are unaffected. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /agent/enroll:
+    post:
+      tags: [Enrollment]
+      summary: Enroll a device and obtain a client certificate
+      operationId: enrollAgent
+      security:
+        - enrollmentToken: []
+      description: |
+        Called by the agent on first boot, and only then. The agent generates its
+        keypair locally and sends a CSR; the private key never leaves the Mac.
+
+        This is the one endpoint on the user plane that an agent calls, because
+        an unenrolled agent has no client certificate and so cannot reach the
+        device plane at all.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, csr, serial_number, hostname]
+              properties:
+                device_id:
+                  type: string
+                  format: uuid
+                  description: UUIDv7 generated by the agent and retained for the device's lifetime.
+                csr:
+                  type: string
+                  format: byte
+                  description: DER-encoded PKCS#10, base64. CN must equal `device_id`.
+                serial_number: { type: string, maxLength: 64 }
+                hardware_uuid: { type: string }
+                hostname:      { type: string, maxLength: 253 }
+                os_version:    { type: string }
+                os_build:      { type: string }
+                model_identifier: { type: string }
+                chip:          { type: string }
+                arch:          { type: string, enum: [arm64, x86_64] }
+                cpu_cores:     { type: integer, minimum: 1 }
+                memory_bytes:  { type: integer, format: int64 }
+                disk_total_bytes: { type: integer, format: int64 }
+                agent_version: { type: string }
+                local_ip:      { type: string }
+      responses:
+        '201':
+          description: Enrolled. The certificate is issued for 90 days.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_id, certificate_pem, ca_bundle_pem, not_after, approved]
+                properties:
+                  device_id:       { type: string, format: uuid }
+                  org_id:          { type: string, format: uuid }
+                  certificate_pem: { type: string }
+                  ca_bundle_pem:   { type: string }
+                  not_after:       { type: string, format: date-time }
+                  approved:
+                    type: boolean
+                    description: False when the token did not carry auto-approve. The agent connects but receives no commands.
+                  device_plane_endpoint: { type: string, examples: ['edgepilot.visionify.ai:9443'] }
+                  signing_public_keys:
+                    type: array
+                    items: { type: string, format: byte }
+                    description: Ed25519 keys the agent pins for artifact and release signatures.
+        '401':
+          description: Enrollment token missing, expired, revoked, or exhausted.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: This serial number is already enrolled and not revoked.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  # ------------------------------------------------------------- Devices ---
+  /devices:
+    get:
+      tags: [Devices]
+      summary: List devices
+      operationId: listDevices
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/DeviceStatus' }
+          style: form
+          explode: false
+        - name: enrollment_state
+          in: query
+          schema: { $ref: '#/components/schemas/EnrollmentState' }
+        - name: q
+          in: query
+          description: Trigram search across hostname, serial number, and site.
+          schema: { type: string, maxLength: 200 }
+        - name: label
+          in: query
+          description: 'Repeatable `key=value` label filter; multiple are ANDed.'
+          schema:
+            type: array
+            items: { type: string, pattern: '^[^=]+=[^=]*$' }
+          style: form
+          explode: true
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [hostname, -hostname, last_seen_at, -last_seen_at, created_at, -created_at]
+            default: -last_seen_at
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Device' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /devices/summary:
+    get:
+      tags: [Devices]
+      summary: Fleet counters for the dashboard cards
+      operationId: getFleetSummary
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FleetSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /devices/{deviceId}:
+    parameters:
+      - $ref: '#/components/parameters/DeviceId'
+    get:
+      tags: [Devices]
+      summary: Get a device
+      operationId: getDevice
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Devices]
+      summary: Update device metadata
+      operationId: updateDevice
+      description: Only operator-owned fields. Hardware and OS facts come from inventory and are read-only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                site:   { type: string, maxLength: 200 }
+                notes:  { type: string, maxLength: 4000 }
+                labels:
+                  type: object
+                  additionalProperties: { type: string, maxLength: 200 }
+                allow_custom_scripts:
+                  type: boolean
+                  description: Pushed to the agent, which enforces it locally regardless of server-side approval.
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Devices]
+      summary: Decommission a device
+      operationId: deleteDevice
+      description: |
+        Revokes the device certificate, terminates its stream, and soft-deletes
+        the record. History is retained; the serial number becomes available for
+        re-enrollment.
+      responses:
+        '204': { description: Decommissioned. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/approve:
+    post:
+      tags: [Devices]
+      summary: Approve or reject a pending enrollment
+      operationId: approveDevice
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                reason:   { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Decision recorded and pushed to the agent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceDetail' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Device is not pending.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /devices/{deviceId}/inventory:
+    get:
+      tags: [Devices]
+      summary: Current inventory
+      operationId: getDeviceInventory
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: kind
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/InventoryKind' }
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sections:
+                    type: array
+                    items: { $ref: '#/components/schemas/InventorySection' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/processes:
+    get:
+      tags: [Devices]
+      summary: Running processes
+      operationId: getDeviceProcesses
+      description: |
+        Served from the live cache written by the agent's 30-second sample, so
+        the data is at most 30 seconds old and is never persisted to Postgres.
+        Returns `503` when the device is offline — a stale process list is worse
+        than none.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: sort
+          in: query
+          schema: { type: string, enum: [cpu, memory, name, pid], default: cpu }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collected_at: { type: string, format: date-time }
+                  processes:
+                    type: array
+                    items: { $ref: '#/components/schemas/Process' }
+        '503': { $ref: '#/components/responses/DeviceOffline' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /devices/{deviceId}/services:
+    get:
+      tags: [Devices]
+      summary: launchd services
+      operationId: getDeviceServices
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: state
+          in: query
+          schema: { type: string, enum: [running, stopped, failed] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collected_at: { type: string, format: date-time }
+                  services:
+                    type: array
+                    items: { $ref: '#/components/schemas/Service' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/applications:
+    get:
+      tags: [Devices]
+      summary: Installed applications
+      operationId: getDeviceApplications
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collected_at: { type: string, format: date-time }
+                  applications:
+                    type: array
+                    items: { $ref: '#/components/schemas/Application' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------- Metrics ---
+  /devices/{deviceId}/metrics:
+    get:
+      tags: [Metrics]
+      summary: Time series for one device
+      operationId: getDeviceMetrics
+      description: |
+        Server-side bucketing. Windows up to 48 h read raw samples; anything
+        wider reads the hourly rollup, so a 30-day chart is a few hundred rows
+        rather than 86,400. The chosen `resolution` is echoed in the response.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time, description: Defaults to now. }
+        - name: metrics
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [cpu, memory, memory_pressure, disk, load, network, disk_io, temperature, uptime]
+          style: form
+          explode: false
+        - name: resolution
+          in: query
+          description: Bucket width. `auto` picks from the window width.
+          schema: { type: string, enum: [auto, raw, '1m', '5m', '1h', '1d'], default: auto }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricSeries' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/metrics/latest:
+    get:
+      tags: [Metrics]
+      summary: Most recent sample
+      operationId: getLatestMetrics
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MetricSample' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------ Commands ---
+  /command-definitions:
+    get:
+      tags: [Commands]
+      summary: The allowlisted command catalogue
+      operationId: listCommandDefinitions
+      description: |
+        The dashboard renders each command's parameter form directly from
+        `params_schema`, so a new command needs no frontend change.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CommandDefinition' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /commands:
+    get:
+      tags: [Commands]
+      summary: List commands
+      operationId: listCommands
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/CommandStatus' }
+          style: form
+          explode: false
+        - name: slug
+          in: query
+          schema: { type: string }
+        - name: correlation_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Command' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Commands]
+      summary: Enqueue a command against one or more devices
+      operationId: createCommand
+      description: |
+        Parameters are validated against the definition's JSON Schema before
+        anything is written. Commands whose definition sets `requires_approval`,
+        or whose device policy demands it, land in `pending_approval` and are not
+        dispatched until a **different** user approves them.
+
+        Fanning out to many devices creates one command per device sharing a
+        `correlation_id`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slug]
+              properties:
+                slug: { type: string, examples: [flush_dns] }
+                device_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  minItems: 1
+                  maxItems: 1000
+                device_selector:
+                  type: object
+                  description: Label selector, as an alternative to an explicit device list.
+                  additionalProperties: { type: string }
+                params:
+                  type: object
+                  description: Must validate against the definition's `params_schema`.
+                timeout_seconds: { type: integer, minimum: 5, maximum: 86400 }
+                priority: { type: integer, minimum: 0, maximum: 9, default: 5 }
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Required for destructive commands; recorded in the audit log.
+              oneOf:
+                - required: [device_ids]
+                - required: [device_selector]
+      responses:
+        '202':
+          description: Accepted and queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  correlation_id: { type: string, format: uuid }
+                  commands:
+                    type: array
+                    items: { $ref: '#/components/schemas/Command' }
+        '403':
+          description: Caller lacks the permission the definition requires.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /commands/{commandId}:
+    parameters:
+      - $ref: '#/components/parameters/CommandId'
+    get:
+      tags: [Commands]
+      summary: Get a command with its result
+      operationId: getCommand
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Commands]
+      summary: Cancel a command
+      operationId: cancelCommand
+      description: Cancels if not yet started; signals the agent to abort if running.
+      responses:
+        '204': { description: Cancellation requested. }
+        '409':
+          description: Command already reached a terminal state.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /commands/{commandId}/approve:
+    post:
+      tags: [Commands]
+      summary: Approve or reject a pending command
+      operationId: approveCommand
+      description: |
+        The requester cannot approve their own command. This is enforced by a
+        database trigger as well as by the service layer, because it is the
+        single control between a compromised operator account and arbitrary code
+        on the fleet.
+      parameters:
+        - $ref: '#/components/parameters/CommandId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                reason:   { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandDetail' }
+        '403':
+          description: Caller lacks approval rights, or is the requester.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: Command is not awaiting approval.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /commands/custom-script:
+    post:
+      tags: [Commands]
+      summary: Request execution of a custom script
+      operationId: createCustomScript
+      description: |
+        Deliberately separate from `POST /commands`: it needs its own permission,
+        always requires a second approver, and uploads a payload.
+
+        On approval the server signs `(device_id, command_id, script_sha256,
+        expires_at)` with the Ed25519 release key. The agent verifies that
+        signature against a **compiled-in** public key before executing, so
+        neither a stolen database nor a compromised API server is sufficient to
+        run a script. A device with `allow_custom_scripts = false` refuses
+        regardless.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [script, device_ids, reason]
+              properties:
+                script:
+                  type: string
+                  format: binary
+                  description: Max 1 MiB.
+                device_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                interpreter:
+                  type: string
+                  enum: ['/bin/bash', '/bin/zsh', '/usr/bin/python3']
+                  default: '/bin/bash'
+                run_as: { type: string, enum: [root, edgepilot], default: edgepilot }
+                arguments:
+                  type: array
+                  items: { type: string }
+                timeout_seconds: { type: integer, minimum: 5, maximum: 86400, default: 900 }
+                reason:
+                  type: string
+                  minLength: 10
+                  maxLength: 1000
+                  description: Shown to the approver and recorded in the audit log.
+      responses:
+        '202':
+          description: Created, awaiting approval.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  correlation_id: { type: string, format: uuid }
+                  commands:
+                    type: array
+                    items: { $ref: '#/components/schemas/Command' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413':
+          description: Script exceeds 1 MiB.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  # ---------------------------------------------------------------- Files ---
+  /devices/{deviceId}/files:
+    get:
+      tags: [Files]
+      summary: List a directory on the device
+      operationId: listDeviceFiles
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: path
+          in: query
+          required: true
+          schema: { type: string, examples: ['/Users/edgepilot'] }
+        - name: show_hidden
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:      { type: string }
+                  truncated: { type: boolean }
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/FileEntry' }
+        '403':
+          description: Path is outside the browsable allowlist.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DeviceOffline' }
+    post:
+      tags: [Files]
+      summary: Upload a file to the device
+      operationId: uploadDeviceFile
+      description: |
+        Two-phase. This call reserves an object key and returns a SAS upload URL;
+        the client PUTs the bytes straight to blob storage, then calls
+        `POST /files/{fileId}/commit`. Large uploads therefore never occupy API
+        server memory or connections.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [remote_path, filename, size_bytes]
+              properties:
+                remote_path: { type: string }
+                filename:    { type: string }
+                size_bytes:  { type: integer, format: int64, minimum: 0 }
+                sha256:      { type: string, pattern: '^[a-f0-9]{64}$' }
+                mode:        { type: integer, examples: [420] }
+                overwrite:   { type: boolean, default: false }
+      responses:
+        '201':
+          description: Upload reserved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileTransfer' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Files]
+      summary: Delete a path on the device
+      operationId: deleteDeviceFile
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+        - name: recursive
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '204': { description: Deleted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Directory is not empty and `recursive` was not set.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /devices/{deviceId}/files/download:
+    post:
+      tags: [Files]
+      summary: Fetch a file from the device
+      operationId: downloadDeviceFile
+      description: |
+        Asynchronous. The agent uploads to blob storage and the returned
+        `FileTransfer` progresses to `available` with a signed download URL.
+        Progress is pushed over the dashboard WebSocket.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string }
+      responses:
+        '202':
+          description: Transfer started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileTransfer' }
+        '503': { $ref: '#/components/responses/DeviceOffline' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /devices/{deviceId}/files/rename:
+    post:
+      tags: [Files]
+      summary: Rename or move a path
+      operationId: renameDeviceFile
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string }
+                to:   { type: string }
+      responses:
+        '204': { description: Renamed. }
+        '409':
+          description: Destination exists.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /devices/{deviceId}/files/mkdir:
+    post:
+      tags: [Files]
+      summary: Create a directory
+      operationId: createDeviceDirectory
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:    { type: string }
+                parents: { type: boolean, default: false }
+                mode:    { type: integer, default: 493 }
+      responses:
+        '201': { description: Created. }
+        '409':
+          description: Path exists.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /files/{fileId}:
+    get:
+      tags: [Files]
+      summary: Get transfer status
+      operationId: getFile
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileTransfer' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /files/{fileId}/commit:
+    post:
+      tags: [Files]
+      summary: Finalise an upload and dispatch it to the device
+      operationId: commitFile
+      description: Verifies the uploaded blob's checksum before the agent is told to fetch it.
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '202':
+          description: Committed and dispatched.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileTransfer' }
+        '409':
+          description: Checksum mismatch, or the blob was never uploaded.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /files/{fileId}/content:
+    get:
+      tags: [Files]
+      summary: Get a signed download URL
+      operationId: getFileContent
+      description: |
+        Returns the URL rather than redirecting to it. A cross-origin `302` to
+        blob storage is awkward for a `fetch`-based client — the redirect is
+        opaque and credentialed requests fail CORS preflight — so the client
+        receives the URL and navigates or streams from it directly.
+      parameters:
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, expires_at]
+                properties:
+                  url:        { type: string, format: uri }
+                  expires_at: { type: string, format: date-time }
+                  filename:   { type: string }
+                  size_bytes: { type: integer, format: int64 }
+                  sha256:     { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Transfer is not yet complete.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  # ---------------------------------------------------------- Deployments ---
+  /packages:
+    get:
+      tags: [Deployments]
+      summary: List software packages
+      operationId: listPackages
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Package' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Deployments]
+      summary: Create a package
+      operationId: createPackage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name:        { type: string, maxLength: 200 }
+                slug:        { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,126}$' }
+                description: { type: string, maxLength: 2000 }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Package' }
+        '409':
+          description: Slug already in use.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /packages/{packageId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/PackageId'
+    get:
+      tags: [Deployments]
+      summary: List versions
+      operationId: listPackageVersions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PackageVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Deployments]
+      summary: Reserve a version and get an upload URL
+      operationId: createPackageVersion
+      description: |
+        Returns a SAS URL. The client uploads the artifact directly to blob
+        storage, then calls `commit`, at which point the server verifies the
+        checksum and signs the digest with the release key. A version is only
+        deployable once it reaches `ready`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, format, size_bytes, sha256]
+              properties:
+                version:      { type: string, maxLength: 64, examples: ['1.4.2'] }
+                format:       { type: string, enum: [pkg, zip, tar.gz, dmg] }
+                size_bytes:   { type: integer, format: int64, minimum: 1 }
+                sha256:       { type: string, pattern: '^[a-f0-9]{64}$' }
+                arch:         { type: string, enum: [arm64, x86_64, universal], default: universal }
+                min_os_version: { type: string }
+                install_spec: { $ref: '#/components/schemas/InstallSpec' }
+      responses:
+        '201':
+          description: Reserved.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PackageVersion'
+                  - type: object
+                    properties:
+                      upload_url: { type: string, format: uri }
+                      expires_at: { type: string, format: date-time }
+        '409':
+          description: Version already exists.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /package-versions/{versionId}/commit:
+    post:
+      tags: [Deployments]
+      summary: Verify and sign an uploaded artifact
+      operationId: commitPackageVersion
+      parameters:
+        - $ref: '#/components/parameters/VersionId'
+      responses:
+        '200':
+          description: Verified, signed, and ready to deploy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PackageVersion' }
+        '409':
+          description: Checksum mismatch, or nothing was uploaded.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /deployments:
+    get:
+      tags: [Deployments]
+      summary: List deployments
+      operationId: listDeployments
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/DeploymentStatusEnum' }
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Deployment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Deployments]
+      summary: Create a deployment
+      operationId: createDeployment
+      description: |
+        Created as a `draft`. The target set is resolved and frozen when it
+        starts, so a device enrolled mid-rollout is not silently swept in.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, package_version_id, strategy]
+              properties:
+                name:               { type: string, maxLength: 200 }
+                package_version_id: { type: string, format: uuid }
+                strategy:           { type: string, enum: [immediate, rolling, scheduled] }
+                batch_size:         { type: integer, minimum: 1, description: Required for `rolling`. }
+                batch_pause_seconds: { type: integer, minimum: 0, default: 60 }
+                scheduled_at:       { type: string, format: date-time, description: Required for `scheduled`. }
+                target_selector:
+                  type: object
+                  properties:
+                    device_ids:
+                      type: array
+                      items: { type: string, format: uuid }
+                    labels:
+                      type: object
+                      additionalProperties: { type: string }
+                auto_rollback_threshold:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  description: Halt and roll back when this fraction of a batch fails.
+                rollback_to_version_id: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Created as a draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /deployments/{deploymentId}:
+    get:
+      tags: [Deployments]
+      summary: Get a deployment
+      operationId: getDeployment
+      parameters:
+        - $ref: '#/components/parameters/DeploymentId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /deployments/{deploymentId}/actions:
+    post:
+      tags: [Deployments]
+      summary: Start, pause, resume, cancel, or roll back
+      operationId: actOnDeployment
+      parameters:
+        - $ref: '#/components/parameters/DeploymentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [start, pause, resume, cancel, rollback] }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Action applied.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Deployment' }
+        '409':
+          description: Action is invalid from the current status.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /deployments/{deploymentId}/status:
+    get:
+      tags: [Deployments]
+      summary: Per-device rollout status
+      operationId: getDeploymentStatus
+      parameters:
+        - $ref: '#/components/parameters/DeploymentId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/DeviceDeploymentState' }
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      summary:
+                        type: object
+                        additionalProperties: { type: integer }
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/DeviceDeploymentStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ----------------------------------------------------------------- Logs ---
+  /devices/{deviceId}/logs/collect:
+    post:
+      tags: [Logs]
+      summary: Request a log bundle
+      operationId: collectLogs
+      description: |
+        The window is mandatory and bounded. An unbounded `log show` on a
+        long-running Mac can produce tens of gigabytes, so the agent refuses one.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [since]
+              properties:
+                sources:
+                  type: array
+                  items: { type: string, enum: [system, application, crash, agent, install, network] }
+                  default: [system, agent]
+                since: { type: string, format: date-time }
+                until: { type: string, format: date-time }
+                max_size_bytes: { type: integer, minimum: 1048576, maximum: 1073741824, default: 268435456 }
+      responses:
+        '202':
+          description: Collection queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LogCollection' }
+        '503': { $ref: '#/components/responses/DeviceOffline' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /log-collections:
+    get:
+      tags: [Logs]
+      summary: List log collections
+      operationId: listLogCollections
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/LogCollection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /events:
+    get:
+      tags: [Logs]
+      summary: Search structured device events
+      operationId: searchEvents
+      description: |
+        Searches agent-emitted structured events, not raw macOS log lines. Raw
+        logs are retrieved as bundles; keeping every line from every Mac would
+        make this a log-aggregation product rather than a fleet manager.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: event_type
+          in: query
+          schema: { type: string }
+        - name: severity
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [debug, info, warning, error, critical] }
+          style: form
+          explode: false
+        - name: q
+          in: query
+          description: Trigram search across the message.
+          schema: { type: string, maxLength: 200 }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/DeviceEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------------------ SSH ---
+  /ssh-keys:
+    get:
+      tags: [SSH]
+      summary: List SSH public keys
+      operationId: listSshKeys
+      parameters:
+        - name: device_id
+          in: query
+          description: Restrict to keys effective on this device.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/SshKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [SSH]
+      summary: Register an SSH public key
+      operationId: createSshKey
+      description: |
+        Public keys only. EdgePilot never holds a private key: the bastion
+        authenticates the outer hop by signature, and the inner hop is
+        end-to-end between the operator's client and the Mac's sshd.
+
+        RSA is not accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, public_key, scope]
+              properties:
+                name:       { type: string, maxLength: 200 }
+                public_key: { type: string, description: A full authorized_keys line. }
+                scope:      { type: string, enum: [org, device] }
+                device_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  description: Required when `scope` is `device`.
+                target_username: { type: string, default: edgepilot, pattern: '^[a-z_][a-z0-9_-]{0,31}$' }
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: Written into the authorized_keys line as `expiry-time=`, so sshd enforces it even on a device that never receives the revocation.
+      responses:
+        '201':
+          description: Registered and queued for reconciliation onto its devices.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SshKey' }
+        '422':
+          description: Malformed or unsupported key type.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /ssh-keys/{keyId}:
+    delete:
+      tags: [SSH]
+      summary: Revoke an SSH key
+      operationId: revokeSshKey
+      description: Removed from every device's authorized_keys on the next config push.
+      parameters:
+        - $ref: '#/components/parameters/KeyId'
+      responses:
+        '204': { description: Revoked. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /devices/{deviceId}/ssh/connection:
+    post:
+      tags: [SSH]
+      summary: Issue connection details for an SSH session
+      operationId: createSshConnection
+      description: |
+        Authorises the caller, records the intent, and returns a ready-to-run
+        `ssh -J` command. No secret is returned: the operator authenticates with
+        a key they already hold, and the session row is opened by the bastion
+        when they actually connect.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SshConnection' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Caller has no active SSH key effective on this device.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DeviceOffline' }
+
+  /ssh-sessions:
+    get:
+      tags: [SSH]
+      summary: SSH connection history
+      operationId: listSshSessions
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, closed, denied, failed] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/SshSession' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /ssh-sessions/{sessionId}:
+    delete:
+      tags: [SSH]
+      summary: Terminate an active session
+      operationId: terminateSshSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '204': { description: Session torn down. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # --------------------------------------------------------------- Alerts ---
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List alerts
+      operationId: listAlerts
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [firing, acknowledged, resolved] }
+          style: form
+          explode: false
+        - name: severity
+          in: query
+          schema:
+            type: array
+            items: { type: string, enum: [info, warning, critical] }
+          style: form
+          explode: false
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Alert' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /alerts/{alertId}:
+    patch:
+      tags: [Alerts]
+      summary: Acknowledge or resolve an alert
+      operationId: updateAlert
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [acknowledged, resolved] }
+                note:   { type: string, maxLength: 1000 }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alert' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /alert-rules:
+    get:
+      tags: [Alerts]
+      summary: List alert rules
+      operationId: listAlertRules
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AlertRule' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Alerts]
+      summary: Create an alert rule
+      operationId: createAlertRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertRuleInput' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /alert-rules/{ruleId}:
+    parameters:
+      - $ref: '#/components/parameters/RuleId'
+    put:
+      tags: [Alerts]
+      summary: Replace an alert rule
+      operationId: updateAlertRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertRuleInput' }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Alerts]
+      summary: Delete an alert rule
+      operationId: deleteAlertRule
+      responses:
+        '204': { description: Deleted. Alerts it raised remain as history. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- Users ---
+  /users:
+    get:
+      tags: [Users]
+      summary: List users
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Users]
+      summary: Invite a user
+      operationId: inviteUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, full_name, role_slugs]
+              properties:
+                email:      { type: string, format: email }
+                full_name:  { type: string, maxLength: 200 }
+                role_slugs:
+                  type: array
+                  minItems: 1
+                  items: { type: string, examples: [operator] }
+      responses:
+        '201':
+          description: Invited.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '409':
+          description: Email already in use in this organization.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    patch:
+      tags: [Users]
+      summary: Update a user
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                full_name:  { type: string, maxLength: 200 }
+                status:     { type: string, enum: [active, disabled] }
+                role_slugs:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Users]
+      summary: Disable a user and revoke their sessions
+      operationId: deleteUser
+      responses:
+        '204': { description: Disabled. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /roles:
+    get:
+      tags: [Users]
+      summary: List roles with their permissions
+      operationId: listRoles
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /permissions:
+    get:
+      tags: [Users]
+      summary: List every permission the system defines
+      operationId: listPermissions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Permission' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- Audit ---
+  /audit-logs:
+    get:
+      tags: [Audit]
+      summary: Search the audit log
+      operationId: searchAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: actor_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          schema: { type: string, examples: ['device.command.execute'] }
+        - name: resource_type
+          in: query
+          schema: { type: string }
+        - name: device_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: outcome
+          in: query
+          schema: { type: string, enum: [success, failure, denied] }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/AuditEntry' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /audit-logs/verify:
+    post:
+      tags: [Audit]
+      summary: Verify the audit hash chain
+      operationId: verifyAuditChain
+      description: |
+        Re-walks the chain over a window and reports the first break, if any.
+        A break means rows were altered or removed outside the append path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string, format: date-time }
+                to:   { type: string, format: date-time }
+      responses:
+        '200':
+          description: Verification finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid, entries_checked]
+                properties:
+                  valid:           { type: boolean }
+                  entries_checked: { type: integer }
+                  first_break_id:  { type: [integer, 'null'], format: int64 }
+                  first_break_at:  { type: [string, 'null'], format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------------------------------- Agent Releases ---
+  /agent-versions:
+    get:
+      tags: [Agent Releases]
+      summary: List agent releases
+      operationId: listAgentVersions
+      parameters:
+        - name: channel
+          in: query
+          schema: { type: string, enum: [stable, beta, canary] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AgentVersion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /agent-versions/{versionId}/rollout:
+    patch:
+      tags: [Agent Releases]
+      summary: Adjust staged rollout
+      operationId: updateAgentRollout
+      description: |
+        Agents self-select by hashing their device UUID into 0-99 and comparing
+        against `rollout_percent`, so the cohort at 10% is stable rather than
+        re-rolled on every poll. Setting `is_yanked` stops further upgrades
+        immediately.
+      parameters:
+        - $ref: '#/components/parameters/VersionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rollout_percent: { type: integer, minimum: 0, maximum: 100 }
+                is_yanked:       { type: boolean }
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentVersion' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # --------------------------------------------------------------- System ---
+  /ws:
+    get:
+      tags: [System]
+      summary: Realtime event stream
+      operationId: websocket
+      description: |
+        WebSocket upgrade. The client sends `{"type":"subscribe","topics":[...]}`;
+        the server pushes envelopes of the form
+        `{"type":"device.status","device_id":"...","data":{...}}`.
+
+        Topics: `fleet`, `device:<uuid>`, `command:<uuid>`, `deployment:<uuid>`,
+        `alerts`, `file:<uuid>`. Every topic is authorised against the caller's
+        permissions at subscribe time and again on reconnect.
+
+        Events carry no payload the caller could not fetch over REST, so a stale
+        or replayed frame leaks nothing.
+      parameters:
+        - name: Upgrade
+          in: header
+          required: true
+          schema: { type: string, enum: [websocket] }
+      responses:
+        '101': { description: Switching protocols. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /healthz:
+    get:
+      tags: [System]
+      summary: Liveness
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+
+  /readyz:
+    get:
+      tags: [System]
+      summary: Readiness
+      operationId: readyz
+      security: []
+      description: Fails when Postgres or Redis is unreachable, or migrations are behind.
+      responses:
+        '200':
+          description: Ready to serve.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+
+# ===========================================================================
+components:
+# ===========================================================================
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Short-lived access token (15 min). Claims: `sub` (user id), `org`,
+        `roles`, `perms`, `sid` (session id), `jti`, `exp`, `iat`.
+        Signed with EdgePilot's key using EdDSA.
+    enrollmentToken:
+      type: http
+      scheme: bearer
+      description: One-time enrollment token, used only by `POST /agent/enroll`.
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor from the previous page's `next_cursor`.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Replaying a key within 24 h returns the original response.
+      schema: { type: string, format: uuid }
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CommandId:
+      name: commandId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DeploymentId:
+      name: deploymentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PackageId:
+      name: packageId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    VersionId:
+      name: versionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    FileId:
+      name: fileId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AlertId:
+      name: alertId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TokenId:
+      name: tokenId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: Missing, expired, or invalid credentials.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated, but lacking the required permission.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: |
+        No such resource, or it belongs to another organization. These are
+        deliberately indistinguishable, so the API cannot be used to probe for
+        the existence of another tenant's resources.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationFailed:
+      description: The request body failed validation.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ValidationProblem' }
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    DeviceOffline:
+      description: The device is not currently connected.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status]
+      properties:
+        type:      { type: string, format: uri, examples: ['https://edgepilot.visionify.ai/problems/forbidden'] }
+        title:     { type: string }
+        status:    { type: integer }
+        detail:    { type: string }
+        instance:  { type: string }
+        request_id: { type: string, format: uuid }
+
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required: [pointer, message]
+                properties:
+                  pointer: { type: string, examples: ['/params/delay_seconds'] }
+                  message: { type: string }
+
+    Page:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor: { type: [string, 'null'] }
+        has_more:    { type: boolean }
+
+    TokenPair:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token: { type: string }
+        token_type:   { type: string, enum: [Bearer] }
+        expires_in:   { type: integer, description: Seconds. }
+
+    CurrentUser:
+      type: object
+      required: [id, email, full_name, org, roles, permissions]
+      properties:
+        id:        { type: string, format: uuid }
+        email:     { type: string, format: email }
+        full_name: { type: string }
+        mfa_enabled: { type: boolean }
+        org:
+          type: object
+          properties:
+            id:   { type: string, format: uuid }
+            name: { type: string }
+            slug: { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        permissions:
+          type: array
+          description: Fully resolved, so the UI can gate controls without re-deriving from roles.
+          items: { type: string }
+
+    DeviceStatus:
+      type: string
+      enum: [pending, online, offline, degraded, decommissioned]
+
+    EnrollmentState:
+      type: string
+      enum: [pending, approved, rejected, revoked]
+
+    EnrollmentToken:
+      type: object
+      required: [id, token_prefix, description, expires_at, auto_approve]
+      properties:
+        id: { type: string, format: uuid }
+        token_prefix:
+          type: string
+          description: Non-secret leading fragment, so a token can be identified in the UI without storing it.
+          examples: ['ep_enroll_9f3a']
+        description:  { type: string }
+        max_uses:     { type: [integer, 'null'] }
+        use_count:    { type: integer }
+        auto_approve: { type: boolean }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        expires_at: { type: string, format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        created_by:
+          type: [object, 'null']
+          properties:
+            id:        { type: string, format: uuid }
+            full_name: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Device:
+      type: object
+      required: [id, hostname, serial_number, status, enrollment_state]
+      properties:
+        id:              { type: string, format: uuid }
+        hostname:        { type: string }
+        serial_number:   { type: string }
+        client:
+          type: string
+          description: The owning organization's display name.
+        site:            { type: string }
+        model_name:      { type: string }
+        chip:            { type: string }
+        arch:            { type: string, enum: [arm64, x86_64] }
+        os_version:      { type: string }
+        os_build:        { type: string }
+        agent_version:   { type: string }
+        memory_bytes:    { type: integer, format: int64 }
+        disk_total_bytes: { type: integer, format: int64 }
+        status:           { $ref: '#/components/schemas/DeviceStatus' }
+        enrollment_state: { $ref: '#/components/schemas/EnrollmentState' }
+        last_seen_at:    { type: [string, 'null'], format: date-time }
+        last_cpu_percent:    { type: [number, 'null'] }
+        last_memory_percent: { type: [number, 'null'] }
+        last_disk_percent:   { type: [number, 'null'] }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        active_alert_count: { type: integer }
+
+    DeviceDetail:
+      allOf:
+        - $ref: '#/components/schemas/Device'
+        - type: object
+          properties:
+            hardware_uuid:    { type: string }
+            model_identifier: { type: string }
+            cpu_cores:        { type: integer }
+            cpu_performance_cores: { type: integer }
+            cpu_efficiency_cores:  { type: integer }
+            local_ip:         { type: string }
+            public_ip:        { type: string }
+            primary_mac:      { type: string }
+            notes:            { type: string }
+            allow_custom_scripts: { type: boolean }
+            first_enrolled_at: { type: [string, 'null'], format: date-time }
+            last_boot_at:      { type: [string, 'null'], format: date-time }
+            certificate:
+              type: object
+              properties:
+                fingerprint_sha256: { type: string }
+                not_after:          { type: string, format: date-time }
+                expires_in_days:    { type: integer }
+
+    FleetSummary:
+      type: object
+      required: [total, online, offline, alerts, updates_available]
+      properties:
+        total:    { type: integer }
+        online:   { type: integer }
+        offline:  { type: integer }
+        pending_approval: { type: integer }
+        degraded: { type: integer }
+        alerts:
+          type: object
+          properties:
+            firing:   { type: integer }
+            critical: { type: integer }
+            warning:  { type: integer }
+        updates_available:
+          type: integer
+          description: Devices whose agent is behind the current stable release.
+        recent_activity:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+
+    InventoryKind:
+      type: string
+      enum: [system, hardware, network, storage, applications, services, security, peripherals]
+
+    InventorySection:
+      type: object
+      required: [kind, collected_at, payload]
+      properties:
+        kind:         { $ref: '#/components/schemas/InventoryKind' }
+        collected_at: { type: string, format: date-time }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Shape varies by `kind`; see docs/API.md for the per-kind schema.
+
+    Process:
+      type: object
+      required: [pid, name, cpu_percent, memory_bytes]
+      properties:
+        pid:          { type: integer }
+        name:         { type: string }
+        user:         { type: string }
+        cpu_percent:  { type: number }
+        memory_bytes: { type: integer, format: int64 }
+        threads:      { type: integer }
+        started_at:   { type: string, format: date-time }
+
+    Service:
+      type: object
+      required: [label, state]
+      properties:
+        label:       { type: string, examples: ['ai.visionify.edgepilot.agent'] }
+        state:       { type: string, enum: [running, stopped, failed] }
+        pid:         { type: [integer, 'null'] }
+        last_exit_code: { type: [integer, 'null'] }
+        domain:      { type: string, enum: [system, gui] }
+
+    Application:
+      type: object
+      required: [name, version]
+      properties:
+        name:            { type: string }
+        version:         { type: string }
+        bundle_id:       { type: string }
+        path:            { type: string }
+        signed_by:       { type: string }
+        last_modified:   { type: string, format: date-time }
+
+    MetricSample:
+      type: object
+      required: [time]
+      properties:
+        time:               { type: string, format: date-time }
+        cpu_percent:        { type: number }
+        memory_used_bytes:  { type: integer, format: int64 }
+        memory_total_bytes: { type: integer, format: int64 }
+        memory_pressure:    { type: number }
+        disk_used_bytes:    { type: integer, format: int64 }
+        disk_total_bytes:   { type: integer, format: int64 }
+        load_1:             { type: number }
+        load_5:             { type: number }
+        load_15:            { type: number }
+        net_rx_bytes_per_sec: { type: number }
+        net_tx_bytes_per_sec: { type: number }
+        temperature_c:
+          type: [number, 'null']
+          description: Null when the hardware exposes no readable sensor. Not zero.
+        uptime_seconds:     { type: integer, format: int64 }
+        process_count:      { type: integer }
+
+    MetricSeries:
+      type: object
+      required: [device_id, from, to, resolution, series]
+      properties:
+        device_id:  { type: string, format: uuid }
+        from:       { type: string, format: date-time }
+        to:         { type: string, format: date-time }
+        resolution: { type: string, description: The bucket width actually used. }
+        source:     { type: string, enum: [raw, hourly] }
+        series:
+          type: array
+          items:
+            type: object
+            required: [name, points]
+            properties:
+              name: { type: string, examples: [cpu_percent] }
+              unit: { type: string, examples: [percent] }
+              points:
+                type: array
+                description: '`[epoch_millis, value]`. A null value marks a genuine gap and must be rendered as a break, not interpolated.'
+                items:
+                  type: array
+                  prefixItems:
+                    - { type: integer, format: int64 }
+                    - { type: [number, 'null'] }
+
+    CommandStatus:
+      type: string
+      enum: [pending_approval, queued, dispatched, running, succeeded, failed, timed_out, cancelled, rejected, expired]
+
+    CommandDefinition:
+      type: object
+      required: [slug, name, category, params_schema, required_permission]
+      properties:
+        slug:        { type: string }
+        name:        { type: string }
+        description: { type: string }
+        category:    { type: string, enum: [general, power, network, diagnostics, maintenance, software, agent] }
+        params_schema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema 2020-12. The dashboard renders its parameter form from this.
+        required_permission:     { type: string }
+        requires_approval:       { type: boolean }
+        is_destructive:          { type: boolean }
+        default_timeout_seconds: { type: integer }
+        min_agent_version:       { type: [string, 'null'] }
+        enabled:                 { type: boolean }
+
+    Command:
+      type: object
+      required: [id, device_id, slug, status, created_at]
+      properties:
+        id:             { type: string, format: uuid }
+        device_id:      { type: string, format: uuid }
+        device_hostname: { type: string }
+        slug:           { type: string }
+        params:
+          type: object
+          additionalProperties: true
+        status:         { $ref: '#/components/schemas/CommandStatus' }
+        priority:       { type: integer }
+        requested_by:
+          type: object
+          properties:
+            id:        { type: string, format: uuid }
+            full_name: { type: string }
+        correlation_id: { type: [string, 'null'], format: uuid }
+        timeout_seconds: { type: integer }
+        attempt:        { type: integer }
+        created_at:     { type: string, format: date-time }
+        queued_at:      { type: [string, 'null'], format: date-time }
+        started_at:     { type: [string, 'null'], format: date-time }
+        finished_at:    { type: [string, 'null'], format: date-time }
+        expires_at:     { type: string, format: date-time }
+
+    CommandDetail:
+      allOf:
+        - $ref: '#/components/schemas/Command'
+        - type: object
+          properties:
+            result:
+              type: [object, 'null']
+              properties:
+                exit_code:    { type: [integer, 'null'] }
+                stdout:       { type: string }
+                stderr:       { type: string }
+                truncated:    { type: boolean }
+                stdout_url:   { type: [string, 'null'], format: uri, description: Present when output was truncated. }
+                duration_ms:  { type: integer, format: int64 }
+                error_code:   { type: [string, 'null'] }
+                error_message: { type: [string, 'null'] }
+                received_at:  { type: string, format: date-time }
+            approvals:
+              type: array
+              items:
+                type: object
+                properties:
+                  decision:   { type: string, enum: [approved, rejected] }
+                  decided_by:
+                    type: object
+                    properties:
+                      id:        { type: string, format: uuid }
+                      full_name: { type: string }
+                  reason:     { type: string }
+                  decided_at: { type: string, format: date-time }
+
+    FileEntry:
+      type: object
+      required: [name, is_dir, size_bytes, modified_at]
+      properties:
+        name:           { type: string }
+        is_dir:         { type: boolean }
+        is_symlink:     { type: boolean }
+        symlink_target: { type: string }
+        size_bytes:     { type: integer, format: int64 }
+        mode:           { type: integer }
+        owner:          { type: string }
+        group:          { type: string }
+        modified_at:    { type: string, format: date-time }
+
+    FileTransfer:
+      type: object
+      required: [id, kind, status, filename]
+      properties:
+        id:        { type: string, format: uuid }
+        kind:      { type: string, enum: [upload, download, log_bundle, command_output, package, agent_release] }
+        device_id: { type: [string, 'null'], format: uuid }
+        filename:  { type: string }
+        remote_path: { type: [string, 'null'] }
+        size_bytes: { type: integer, format: int64 }
+        bytes_transferred: { type: integer, format: int64 }
+        progress_percent: { type: integer }
+        status:    { type: string, enum: [pending, transferring, available, failed, expired, deleted] }
+        sha256:    { type: [string, 'null'] }
+        error_message: { type: [string, 'null'] }
+        upload_url:   { type: [string, 'null'], format: uri, description: Present only on creation of an upload. }
+        download_url: { type: [string, 'null'], format: uri, description: Present once `available`. }
+        expires_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    InstallSpec:
+      type: object
+      description: How to install an artifact. Hooks reference allowlisted command slugs, never shell strings.
+      additionalProperties: false
+      properties:
+        target_path:    { type: string, description: 'Extraction destination for archive formats.' }
+        pre_install:
+          type: array
+          items: { $ref: '#/components/schemas/InstallHook' }
+        post_install:
+          type: array
+          items: { $ref: '#/components/schemas/InstallHook' }
+        verify:
+          type: object
+          description: Run after install; a non-matching result fails the deployment on that device.
+          properties:
+            type:     { type: string, enum: [file_exists, bundle_version, service_running] }
+            path:     { type: string }
+            label:    { type: string }
+            expected: { type: string }
+        requires_reboot: { type: boolean, default: false }
+
+    InstallHook:
+      type: object
+      required: [slug]
+      properties:
+        slug:   { type: string, description: An allowlisted command slug. }
+        params:
+          type: object
+          additionalProperties: true
+
+    Package:
+      type: object
+      required: [id, name, slug]
+      properties:
+        id:          { type: string, format: uuid }
+        name:        { type: string }
+        slug:        { type: string }
+        description: { type: string }
+        latest_version: { type: [string, 'null'] }
+        version_count:  { type: integer }
+        created_at:  { type: string, format: date-time }
+
+    PackageVersion:
+      type: object
+      required: [id, package_id, version, format, status]
+      properties:
+        id:         { type: string, format: uuid }
+        package_id: { type: string, format: uuid }
+        version:    { type: string }
+        format:     { type: string, enum: [pkg, zip, tar.gz, dmg] }
+        arch:       { type: string, enum: [arm64, x86_64, universal] }
+        size_bytes: { type: integer, format: int64 }
+        sha256:     { type: string }
+        status:     { type: string, enum: [uploading, ready, quarantined, deprecated] }
+        min_os_version: { type: [string, 'null'] }
+        install_spec:   { $ref: '#/components/schemas/InstallSpec' }
+        created_at: { type: string, format: date-time }
+
+    DeploymentStatusEnum:
+      type: string
+      enum: [draft, scheduled, running, paused, completed, failed, rolled_back, cancelled]
+
+    DeviceDeploymentState:
+      type: string
+      enum: [queued, downloading, verifying, installing, completed, failed, rolled_back, skipped, cancelled]
+
+    Deployment:
+      type: object
+      required: [id, name, status, strategy, package_version_id]
+      properties:
+        id:       { type: string, format: uuid }
+        name:     { type: string }
+        package_version_id: { type: string, format: uuid }
+        package_name:    { type: string }
+        version:         { type: string }
+        strategy: { type: string, enum: [immediate, rolling, scheduled] }
+        status:   { $ref: '#/components/schemas/DeploymentStatusEnum' }
+        batch_size:          { type: [integer, 'null'] }
+        batch_pause_seconds: { type: integer }
+        auto_rollback_threshold: { type: [number, 'null'] }
+        total_targets:   { type: integer }
+        succeeded_count: { type: integer }
+        failed_count:    { type: integer }
+        scheduled_at: { type: [string, 'null'], format: date-time }
+        started_at:   { type: [string, 'null'], format: date-time }
+        finished_at:  { type: [string, 'null'], format: date-time }
+        created_at:   { type: string, format: date-time }
+
+    DeviceDeploymentStatus:
+      type: object
+      required: [device_id, status]
+      properties:
+        device_id:        { type: string, format: uuid }
+        device_hostname:  { type: string }
+        status:           { $ref: '#/components/schemas/DeviceDeploymentState' }
+        progress_percent: { type: integer }
+        bytes_downloaded: { type: integer, format: int64 }
+        batch_index:      { type: integer }
+        attempt:          { type: integer }
+        previous_version: { type: [string, 'null'] }
+        error_code:       { type: [string, 'null'] }
+        error_message:    { type: [string, 'null'] }
+        started_at:       { type: [string, 'null'], format: date-time }
+        finished_at:      { type: [string, 'null'], format: date-time }
+
+    LogCollection:
+      type: object
+      required: [id, device_id, status, sources, since]
+      properties:
+        id:        { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        sources:
+          type: array
+          items: { type: string }
+        since:     { type: string, format: date-time }
+        until:     { type: [string, 'null'], format: date-time }
+        status:    { type: string, enum: [queued, collecting, uploading, available, failed, cancelled] }
+        file:      { $ref: '#/components/schemas/FileTransfer' }
+        error_message: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    DeviceEvent:
+      type: object
+      required: [device_id, occurred_at, event_type, severity]
+      properties:
+        device_id:   { type: string, format: uuid }
+        device_hostname: { type: string }
+        occurred_at: { type: string, format: date-time }
+        event_type:  { type: string }
+        severity:    { type: string, enum: [debug, info, warning, error, critical] }
+        message:     { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+
+    SshKey:
+      type: object
+      required: [id, name, key_type, fingerprint_sha256, scope]
+      properties:
+        id:                 { type: string, format: uuid }
+        name:               { type: string }
+        key_type:           { type: string }
+        fingerprint_sha256: { type: string, examples: ['SHA256:tLd7l9...'] }
+        public_key:         { type: string }
+        scope:              { type: string, enum: [org, device] }
+        target_username:    { type: string }
+        owner:
+          type: [object, 'null']
+          properties:
+            id:        { type: string, format: uuid }
+            full_name: { type: string }
+        device_ids:
+          type: array
+          items: { type: string, format: uuid }
+        expires_at:   { type: [string, 'null'], format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+        created_at:   { type: string, format: date-time }
+
+    SshConnection:
+      type: object
+      required: [command, bastion_host, bastion_port, target, username]
+      properties:
+        command:
+          type: string
+          description: Ready to paste. Backs both "Copy SSH command" and "Open Terminal".
+          examples: ['ssh -J ep-bastion.visionify.ai:2222 -i ~/.ssh/edgepilot_ed25519 edgepilot@3f9a1c2e-7b4d-4e8a-9c1f-2a5b6d8e0f11']
+        bastion_host: { type: string }
+        bastion_port: { type: integer }
+        target:
+          type: string
+          description: Device UUID, used as the inner-hop host.
+        username:     { type: string }
+        key_fingerprint: { type: string, description: The caller's key that will authenticate the outer hop. }
+        bastion_host_key:
+          type: string
+          description: Bastion host key, so the client can pin it instead of trusting on first use.
+
+    SshSession:
+      type: object
+      required: [id, device_id, status, started_at]
+      properties:
+        id:        { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        device_hostname: { type: string }
+        user:
+          type: [object, 'null']
+          properties:
+            id:        { type: string, format: uuid }
+            full_name: { type: string }
+        key_fingerprint: { type: [string, 'null'] }
+        client_ip:       { type: [string, 'null'] }
+        target_username: { type: string }
+        status:    { type: string, enum: [active, closed, denied, failed] }
+        bytes_in:  { type: integer, format: int64 }
+        bytes_out: { type: integer, format: int64 }
+        started_at: { type: string, format: date-time }
+        ended_at:   { type: [string, 'null'], format: date-time }
+        close_reason: { type: [string, 'null'] }
+
+    Alert:
+      type: object
+      required: [id, type, severity, status, summary, started_at]
+      properties:
+        id:        { type: string, format: uuid }
+        type:      { type: string }
+        severity:  { type: string, enum: [info, warning, critical] }
+        status:    { type: string, enum: [firing, acknowledged, resolved] }
+        summary:   { type: string }
+        details:
+          type: object
+          additionalProperties: true
+        value:     { type: [number, 'null'] }
+        threshold: { type: [number, 'null'] }
+        device:
+          type: [object, 'null']
+          properties:
+            id:       { type: string, format: uuid }
+            hostname: { type: string }
+        rule_id:   { type: [string, 'null'], format: uuid }
+        started_at:      { type: string, format: date-time }
+        last_seen_at:    { type: string, format: date-time }
+        acknowledged_at: { type: [string, 'null'], format: date-time }
+        acknowledged_by:
+          type: [object, 'null']
+          properties:
+            id:        { type: string, format: uuid }
+            full_name: { type: string }
+        resolved_at: { type: [string, 'null'], format: date-time }
+
+    AlertRuleInput:
+      type: object
+      required: [name, type, severity]
+      properties:
+        name:     { type: string, maxLength: 200 }
+        type:
+          type: string
+          enum: [device_offline, cpu_high, memory_high, disk_full, agent_stopped,
+                 service_failed, temperature_high, deployment_failed, certificate_expiring]
+        enabled:  { type: boolean, default: true }
+        severity: { type: string, enum: [info, warning, critical] }
+        threshold:
+          type: [number, 'null']
+          description: Percent for cpu/memory/disk, seconds for offline, degrees for temperature.
+        duration_seconds:
+          type: integer
+          minimum: 0
+          default: 300
+          description: The condition must hold this long before firing.
+        renotify_seconds: { type: integer, minimum: 0, default: 3600 }
+        selector:
+          type: object
+          additionalProperties: { type: string }
+          description: Label selector. Empty means every device.
+        notify:
+          type: array
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:   { type: string, enum: [webhook, email] }
+              url:    { type: string, format: uri }
+              emails:
+                type: array
+                items: { type: string, format: email }
+
+    AlertRule:
+      allOf:
+        - $ref: '#/components/schemas/AlertRuleInput'
+        - type: object
+          required: [id]
+          properties:
+            id:         { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    User:
+      type: object
+      required: [id, email, full_name, status, roles]
+      properties:
+        id:        { type: string, format: uuid }
+        email:     { type: string, format: email }
+        full_name: { type: string }
+        status:    { type: string, enum: [invited, active, disabled, locked] }
+        mfa_enabled:   { type: boolean }
+        roles:
+          type: array
+          items: { type: string }
+        last_login_at: { type: [string, 'null'], format: date-time }
+        created_at:    { type: string, format: date-time }
+
+    Role:
+      type: object
+      required: [id, slug, name, permissions]
+      properties:
+        id:          { type: string, format: uuid }
+        slug:        { type: string }
+        name:        { type: string }
+        description: { type: string }
+        is_system:   { type: boolean }
+        permissions:
+          type: array
+          items: { type: string }
+
+    Permission:
+      type: object
+      required: [slug, resource, action]
+      properties:
+        slug:        { type: string }
+        resource:    { type: string }
+        action:      { type: string }
+        description: { type: string }
+
+    AuditEntry:
+      type: object
+      required: [id, occurred_at, actor_type, action, resource_type, outcome]
+      properties:
+        id:          { type: integer, format: int64 }
+        occurred_at: { type: string, format: date-time }
+        actor_type:  { type: string, enum: [user, agent, system, api_key] }
+        actor_id:    { type: [string, 'null'], format: uuid }
+        actor_label: { type: string }
+        action:      { type: string, examples: ['device.command.execute'] }
+        resource_type: { type: string }
+        resource_id:   { type: [string, 'null'] }
+        device_id:     { type: [string, 'null'], format: uuid }
+        outcome:     { type: string, enum: [success, failure, denied] }
+        ip:          { type: [string, 'null'] }
+        request_id:  { type: [string, 'null'], format: uuid }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    AgentVersion:
+      type: object
+      required: [id, version, channel, arch, rollout_percent]
+      properties:
+        id:              { type: string, format: uuid }
+        version:         { type: string }
+        channel:         { type: string, enum: [stable, beta, canary] }
+        arch:            { type: string, enum: [arm64, x86_64, universal] }
+        size_bytes:      { type: integer, format: int64 }
+        sha256:          { type: string }
+        release_notes:   { type: string }
+        min_upgrade_from: { type: [string, 'null'] }
+        rollout_percent: { type: integer, minimum: 0, maximum: 100 }
+        is_yanked:       { type: boolean }
+        device_count:
+          type: integer
+          description: Devices currently running this version.
+        published_at:    { type: [string, 'null'], format: date-time }
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        checks:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:  { type: string, enum: [ok, failing] }
+              detail:  { type: string }
+              latency_ms: { type: number }
+        migration_version: { type: integer }

@@ -1,0 +1,21 @@
+// Go workspace spanning the three modules.
+//
+// They are separate modules, not packages of one, so the boundaries are enforced
+// by the compiler rather than by convention:
+//
+//   packages/proto  the device-plane contract, imported by both binaries
+//   apps/server     the management server
+//   apps/agent      the macOS agent
+//
+// The agent physically CANNOT import apps/server/internal — Go's internal rule
+// blocks it across module boundaries. That matters: the agent ships to customer
+// hardware, and a shared internal package is exactly how a server dependency
+// ends up on 10,000 Macs.
+
+go 1.25.0
+
+use (
+	./apps/agent
+	./apps/server
+	./packages/proto
+)

@@ -1,0 +1,90 @@
+# Design-artifact verification.
+#
+# These jobs check the contracts that everything else is built against: the
+# database schema, the device-plane protobuf, and the API specification. They
+# need no Go or Node toolchain, so they run on every push from day one and stay
+# green through the whole build-out.
+#
+# Application build and test jobs live in ci.yml and come online with Phase 0.
+
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  schema:
+    name: Database schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply, exercise, reverse, and re-apply migrations
+        run: ./scripts/verify-schema.sh
+
+  proto:
+    name: Device protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Lint
+        run: buf lint
+        working-directory: packages/proto
+
+      - name: Compile
+        run: buf build -o /dev/null
+        working-directory: packages/proto
+
+      # The device plane is a live contract with agents already in the field. A
+      # field number reused or a message removed breaks every Mac that has not
+      # yet upgraded, so this is a hard gate, not advisory.
+      - name: Breaking-change check
+        if: github.event_name == 'pull_request'
+        run: |
+          buf breaking --against \
+            "https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }},subdir=packages/proto"
+        working-directory: packages/proto
+
+  api:
+    name: API specification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Lint
+        run: npx --yes @redocly/cli@latest lint --config redocly.yaml openapi.yaml
+        working-directory: packages/shared/openapi
+
+      - name: Bundle
+        run: npx --yes @redocly/cli@latest bundle --config redocly.yaml openapi.yaml -o /dev/null
+        working-directory: packages/shared/openapi
+
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that every internal link resolves
+        run: ./scripts/check-doc-links.sh

@@ -1,0 +1,17 @@
+# Reviewed lint exceptions. Each entry is a case where the convention genuinely
+# does not apply — not a finding left unfixed. Anything not listed here fails CI.
+#
+#   /ws      — a WebSocket upgrade returns 101 Switching Protocols. There is no
+#              2xx to add; inventing one would misdescribe the endpoint.
+#   /healthz — liveness. If the process can answer at all it is alive, so 200 is
+#              the only meaningful response. A 4xx here would be fiction.
+#   /readyz  — readiness fails with 503 Service Unavailable, the correct code for
+#              "dependencies unreachable". That is 5xx, not 4xx.
+#
+# See https://redocly.com/docs/cli/ for the file format.
+openapi.yaml:
+  operation-2xx-response:
+    - '#/paths/~1ws/get/responses'
+  operation-4xx-response:
+    - '#/paths/~1healthz/get/responses'
+    - '#/paths/~1readyz/get/responses'

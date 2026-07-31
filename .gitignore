@@ -1,0 +1,38 @@
+# Build output
+/bin/
+*.exe
+coverage.out
+coverage.html
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+apps/dashboard/.next/
+apps/dashboard/out/
+apps/dashboard/next-env.d.ts
+
+# Local environment — never commit a real one.
+# deployments/docker/.env.example is the committed template.
+.env
+.env.local
+deployments/docker/.env
+
+# Secrets and key material. Belt and braces: these should live in Key Vault,
+# but a stray local CA key must never become a commit.
+*.pem
+*.key
+*.p12
+*.pfx
+/secrets/
+
+# Go workspace sum: machine-specific, and go.work is enough to reproduce.
+go.work.sum
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

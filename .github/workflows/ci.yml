@@ -1,0 +1,227 @@
+# Application build, test, and security.
+#
+# The design-artifact checks (schema, protobuf, OpenAPI) live in verify.yml and
+# run independently, so a broken Go build never hides a broken contract.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [apps/server, packages/proto]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            apps/server/go.sum
+            packages/proto/go.sum
+
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@latest
+
+      - name: Formatting
+        run: |
+          unformatted=$(gofumpt -l apps packages)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofumpt-formatted:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: make lint-go
+
+      - name: Architecture boundaries
+        run: make lint-arch
+
+      # One root .golangci.yml governs every module; golangci-lint finds it by
+      # searching parent directories.
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: ${{ matrix.module }}
+          version: latest
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    # Integration tests run against a real PostgreSQL. The alternative — mocking
+    # the database — would assert that the code calls the query it was written
+    # to call, which says nothing about whether row-level security, partition
+    # routing, or a check constraint actually behaves.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: edgepilot
+          POSTGRES_PASSWORD: edgepilot
+          POSTGRES_DB: edgepilot
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U edgepilot -d edgepilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # testsupport creates a scratch database per test from this admin DSN.
+      # When it is unset the integration tests skip; in CI they must not, so
+      # testsupport fails instead when CI is set and this is missing.
+      EP_TEST_DATABASE_URL: postgres://edgepilot:edgepilot@localhost:5432/edgepilot?sslmode=disable
+      EP_TEST_REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            apps/server/go.sum
+            packages/proto/go.sum
+
+      # -race is not optional. The device plane is heavily concurrent, and a
+      # data race there is a fleet-wide bug.
+      - name: Test
+        run: make test-go
+
+      - name: Coverage summary
+        run: |
+          cd apps/server
+          go test -covermode=atomic -coverprofile=coverage.out ./... > /dev/null
+          go tool cover -func=coverage.out | tail -1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: apps/server/coverage.out
+          retention-days: 7
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            apps/server/go.sum
+            apps/agent/go.sum
+            packages/proto/go.sum
+
+      - name: Server and epctl
+        run: make build-server
+
+      # The agent ships to customer hardware on both architectures. Building it
+      # here means a darwin-only compile error is caught on every PR rather than
+      # at release time.
+      - name: Agent (darwin/arm64 and darwin/amd64)
+        run: |
+          if [ -z "$(cd apps/agent && go list ./... 2>/dev/null)" ]; then
+            echo "agent has no packages yet; skipping"
+            exit 0
+          fi
+          cd apps/agent
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath ./...
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath ./...
+          # The simulator build is what makes the control-plane path testable on
+          # Linux. It is a supported configuration, so a compile error in it has
+          # to fail a PR rather than surface the next time someone runs it.
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -tags simulator ./...
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -tags simulator ./...
+
+      # Generated query code is committed so a checkout builds without sqlc, and
+      # so a schema change that breaks a query is visible in review.
+      - name: Generated query code is current
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src sqlc/sqlc:latest generate
+          if ! git diff --quiet -- apps/server/internal/repository/postgres/sqlcgen; then
+            echo "::error::sqlcgen is stale — run 'make sqlc' and commit the result"
+            git diff --stat -- apps/server/internal/repository/postgres/sqlcgen
+            exit 1
+          fi
+
+      - name: Queries type-check against the schema
+        run: docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" -w /src sqlc/sqlc:latest vet
+
+      # Generated protobuf is committed so a fresh checkout builds without
+      # protoc. Committed generated code drifts unless something checks.
+      - name: Generated protobuf is current
+        run: |
+          mkdir -p "$HOME/.cache/buf"
+          make proto
+          if ! git diff --quiet -- packages/proto/gen; then
+            echo "::error::packages/proto/gen is stale — run 'make proto' and commit the result"
+            git diff --stat -- packages/proto/gen
+            exit 1
+          fi
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            apps/server/go.sum
+            packages/proto/go.sum
+
+      - name: Dependency integrity
+        run: |
+          for m in apps/server packages/proto; do
+            (cd "$m" && go mod verify)
+          done
+
+      - name: Known vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          for m in apps/server packages/proto; do
+            [ -z "$(cd "$m" && go list ./... 2>/dev/null)" ] && continue
+            echo "==> $m"
+            (cd "$m" && govulncheck ./...)
+          done
+
+      # go.mod and go.sum must already be tidy: an untidy module is how an
+      # unreviewed transitive dependency arrives.
+      - name: Modules are tidy
+        run: |
+          for m in apps/server packages/proto; do
+            (cd "$m" && go mod tidy)
+          done
+          if ! git diff --quiet -- '**/go.mod' '**/go.sum'; then
+            echo "::error::go.mod or go.sum is not tidy — run 'go mod tidy' and commit"
+            git diff -- '**/go.mod' '**/go.sum'
+            exit 1
+          fi
