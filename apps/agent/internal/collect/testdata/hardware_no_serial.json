@@ -1,0 +1,14 @@
+{
+  "SPHardwareDataType" : [
+    {
+      "_name" : "hardware_overview",
+      "chip_type" : "Apple M2",
+      "machine_model" : "Mac14,3",
+      "machine_name" : "Mac mini",
+      "number_processors" : "proc 8:4:4",
+      "physical_memory" : "8 GB",
+      "platform_UUID" : "00000000-0000-0000-0000-000000000000",
+      "serial_number" : ""
+    }
+  ]
+}

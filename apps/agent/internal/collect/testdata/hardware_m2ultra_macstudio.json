@@ -1,0 +1,18 @@
+{
+  "SPHardwareDataType" : [
+    {
+      "_name" : "hardware_overview",
+      "activation_lock_status" : "Enabled",
+      "boot_rom_version" : "11881.1.1",
+      "chip_type" : "Apple M2 Ultra",
+      "machine_model" : "Mac14,14",
+      "machine_name" : "Mac Studio",
+      "number_processors" : "proc 24:16:8",
+      "os_loader_version" : "11881.1.1",
+      "physical_memory" : "192 GB",
+      "platform_UUID" : "A9B8C7D6-E5F4-4321-9876-543210FEDCBA",
+      "provisioning_UDID" : "00008103-001C2D3E4F506172",
+      "serial_number" : "J5XQ8M2NP7VK"
+    }
+  ]
+}
