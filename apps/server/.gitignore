@@ -1,0 +1,5 @@
+# Generated at build time by `epctl` consumers; never edited by hand.
+/edgepilot-server
+/epctl
+# `go build ./cmd/server` with no -o lands here; 33 MB of it.
+/server
