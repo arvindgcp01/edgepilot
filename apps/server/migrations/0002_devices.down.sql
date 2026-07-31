@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS device_inventory CASCADE;
+DROP TABLE IF EXISTS device_certificates CASCADE;
+DROP TABLE IF EXISTS devices CASCADE;
+DROP TABLE IF EXISTS enrollment_tokens CASCADE;

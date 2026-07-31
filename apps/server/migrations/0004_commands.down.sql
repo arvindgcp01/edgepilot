@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS command_results CASCADE;
+DROP TABLE IF EXISTS command_approvals CASCADE;
+DROP FUNCTION IF EXISTS reject_self_approval();
+DROP TABLE IF EXISTS commands CASCADE;
+DROP TABLE IF EXISTS command_definitions CASCADE;
