@@ -5,14 +5,14 @@ import { cn } from "@/lib/cn";
 import { Icon } from "./icons";
 
 const CONTROL =
-  "w-full rounded-md border border-surface-border-strong bg-surface text-sm text-ink " +
-  "placeholder:text-ink-faint transition-colors hover:border-ink-faint/60 " +
-  "focus:border-accent focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50 " +
-  "aria-[invalid=true]:border-danger";
+  "w-full rounded-lg border border-surface-border-strong bg-surface-raised text-sm text-ink shadow-sm " +
+  "placeholder:text-ink-faint transition-[border-color,box-shadow] hover:border-ink-faint/60 " +
+  "focus:border-accent focus:shadow-focus focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 " +
+  "disabled:cursor-not-allowed disabled:opacity-50 aria-[invalid=true]:border-danger";
 
 export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   function Input({ className, ...props }, ref) {
-    return <input ref={ref} {...props} className={cn(CONTROL, "h-8 px-2.5", className)} />;
+    return <input ref={ref} {...props} className={cn(CONTROL, "h-9 px-3", className)} />;
   },
 );
 
@@ -25,7 +25,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttrib
 export const Select = forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSelectElement>>(
   function Select({ className, children, ...props }, ref) {
     return (
-      <select ref={ref} {...props} className={cn(CONTROL, "h-8 appearance-none pl-2.5 pr-8", className)}>
+      <select ref={ref} {...props} className={cn(CONTROL, "h-9 appearance-none pl-3 pr-8", className)}>
         {children}
       </select>
     );
@@ -39,9 +39,9 @@ export const SearchInput = forwardRef<HTMLInputElement, React.InputHTMLAttribute
         <Icon
           name="search"
           size={14}
-          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint"
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"
         />
-        <Input ref={ref} type="search" {...props} className="pl-8" />
+        <Input ref={ref} type="search" {...props} className="pl-9" />
       </div>
     );
   },
@@ -150,7 +150,7 @@ export function Switch({
         onClick={() => onChange(!checked)}
         className={cn(
           "relative mt-0.5 h-5 w-9 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-          checked ? "border-accent bg-accent" : "border-surface-border-strong bg-surface-hover",
+          checked ? "border-accent bg-accent" : "border-surface-border-strong bg-surface-sunken",
         )}
       >
         <span
@@ -187,8 +187,8 @@ export function Segmented<T extends string>({
       role="group"
       aria-label={ariaLabel}
       className={cn(
-        "inline-flex items-center rounded-md border border-surface-border bg-surface p-0.5",
-        size === "sm" ? "h-7" : "h-8",
+        "inline-flex items-center rounded-lg border border-surface-border bg-surface-sunken p-0.5",
+        size === "sm" ? "h-8" : "h-9",
       )}
     >
       {options.map((option) => {
@@ -200,9 +200,11 @@ export function Segmented<T extends string>({
             aria-pressed={selected}
             onClick={() => onChange(option.value)}
             className={cn(
-              "inline-flex h-full items-center gap-1.5 rounded px-2.5 font-medium transition-colors",
+              "inline-flex h-full items-center gap-1.5 rounded-md px-3 font-medium transition-all",
               size === "sm" ? "text-xs" : "text-sm",
-              selected ? "bg-surface-hover text-ink shadow-sm" : "text-ink-muted hover:text-ink",
+              selected
+                ? "bg-surface-raised text-ink shadow-sm ring-1 ring-surface-border"
+                : "text-ink-muted hover:text-ink",
             )}
           >
             {option.label}

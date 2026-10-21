@@ -10,12 +10,12 @@ export type BadgeTone = "neutral" | "info" | "success" | "warning" | "danger" | 
  * around it, and the data is what the page is for.
  */
 const TONE: Record<BadgeTone, string> = {
-  neutral: "border-surface-border-strong bg-surface-hover text-ink-muted",
-  info: "border-pending/30 bg-pending/10 text-pending",
-  success: "border-online/30 bg-online/10 text-online",
-  warning: "border-degraded/30 bg-degraded/10 text-degraded",
-  danger: "border-danger/30 bg-danger/10 text-danger",
-  accent: "border-accent/30 bg-accent/10 text-accent-soft",
+  neutral: "border-surface-border bg-surface-hover text-ink-muted",
+  info: "border-pending/20 bg-pending/10 text-pending",
+  success: "border-online/20 bg-online/10 text-online",
+  warning: "border-degraded/20 bg-degraded/10 text-degraded",
+  danger: "border-danger/20 bg-danger/10 text-danger",
+  accent: "border-accent/20 bg-accent/10 text-accent-soft",
 };
 
 export function Badge({
@@ -29,7 +29,7 @@ export function Badge({
     <span
       {...props}
       className={cn(
-        "inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded border px-1.5 text-xs font-medium leading-none",
+        "inline-flex h-[22px] items-center gap-1.5 whitespace-nowrap rounded-full border px-2 text-xs font-medium leading-none",
         TONE[tone],
         className,
       )}
@@ -73,7 +73,7 @@ export function Code({ className, children }: { className?: string; children: Re
   return (
     <code
       className={cn(
-        "rounded border border-surface-border bg-surface px-1 py-px font-mono text-xs text-ink-muted",
+        "rounded-md border border-surface-border bg-surface-sunken px-1.5 py-px font-mono text-xs text-ink-muted",
         className,
       )}
     >

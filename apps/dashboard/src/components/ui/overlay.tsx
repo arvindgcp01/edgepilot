@@ -85,7 +85,7 @@ export function Modal({
   return (
     <Portal>
       <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 pt-[10vh] sm:pt-[14vh]">
-        <div className="fixed inset-0 animate-fade-in bg-black/60" onClick={onClose} aria-hidden />
+        <div className="fixed inset-0 animate-fade-in bg-slate-900/30 backdrop-blur-[2px] dark:bg-black/60" onClick={onClose} aria-hidden />
         <div
           ref={ref}
           role="dialog"
@@ -93,7 +93,7 @@ export function Modal({
           aria-labelledby={titleId}
           tabIndex={-1}
           className={cn(
-            "relative w-full animate-slide-up rounded-lg border border-surface-border bg-surface-raised shadow-overlay outline-none",
+            "relative w-full animate-scale-in rounded-xl border border-surface-border bg-surface-raised shadow-overlay outline-none",
             size === "sm" && "max-w-sm",
             size === "md" && "max-w-lg",
             size === "lg" && "max-w-2xl",
@@ -244,7 +244,7 @@ export function Drawer({
   return (
     <Portal>
       <div className="fixed inset-0 z-50">
-        <div className="fixed inset-0 animate-fade-in bg-black/50" onClick={onClose} aria-hidden />
+        <div className="fixed inset-0 animate-fade-in bg-slate-900/20 backdrop-blur-[2px] dark:bg-black/50" onClick={onClose} aria-hidden />
         <div
           ref={ref}
           role="dialog"
@@ -318,24 +318,30 @@ export function Menu({
   trigger,
   items,
   align = "end",
+  side = "bottom",
   width = "w-52",
+  className,
 }: {
   trigger: (props: { open: boolean; toggle: () => void }) => React.ReactNode;
   items: MenuItem[];
   align?: "start" | "end";
+  /** "top" opens upward, for a trigger pinned to the bottom of the screen. */
+  side?: "top" | "bottom";
   width?: string;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
 
   return (
-    <div ref={ref} className="relative inline-block text-left">
+    <div ref={ref} className={cn("relative inline-block text-left", className)}>
       {trigger({ open, toggle: () => setOpen((v) => !v) })}
       {open && (
         <div
           role="menu"
           className={cn(
-            "absolute z-40 mt-1 animate-slide-up rounded-md border border-surface-border bg-surface-overlay p-1 shadow-overlay",
+            "absolute z-40 animate-slide-up rounded-lg border border-surface-border bg-surface-overlay p-1 shadow-overlay",
+            side === "top" ? "bottom-full mb-1.5" : "mt-1.5",
             align === "end" ? "right-0" : "left-0",
             width,
           )}
@@ -362,7 +368,7 @@ export function Menu({
                   item.onSelect();
                 }}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50",
+                  "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50",
                   item.tone === "danger"
                     ? "text-danger hover:bg-danger/10"
                     : "text-ink hover:bg-surface-hover",
@@ -401,7 +407,7 @@ export function Popover({
       {open && (
         <div
           className={cn(
-            "absolute z-40 mt-1 animate-slide-up overflow-hidden rounded-md border border-surface-border bg-surface-overlay shadow-overlay",
+            "absolute z-40 mt-1.5 animate-slide-up overflow-hidden rounded-lg border border-surface-border bg-surface-overlay shadow-overlay",
             align === "end" ? "right-0" : "left-0",
             width,
           )}
@@ -430,7 +436,7 @@ export function Tooltip({
       <span
         role="tooltip"
         className={cn(
-          "pointer-events-none absolute left-1/2 z-40 -translate-x-1/2 whitespace-nowrap rounded border border-surface-border bg-surface-overlay px-2 py-1 text-xs text-ink opacity-0 shadow-overlay transition-opacity delay-150 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100",
+          "pointer-events-none absolute left-1/2 z-40 -translate-x-1/2 whitespace-nowrap rounded-md border border-transparent bg-ink px-2 py-1 text-xs text-ink-inverse opacity-0 shadow-overlay transition-opacity delay-150 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100",
           side === "top" ? "bottom-full mb-1.5" : "top-full mt-1.5",
         )}
       >

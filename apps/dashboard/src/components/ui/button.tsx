@@ -15,17 +15,18 @@ export type ButtonSize = "sm" | "md";
  * page never shows a filled red control that acts on first click.
  */
 const VARIANT: Record<ButtonVariant, string> = {
-  primary: "bg-accent text-white hover:bg-accent-hover border border-transparent shadow-sm",
+  primary:
+    "bg-accent text-white hover:bg-accent-hover border border-transparent shadow-sm shadow-accent/20",
   secondary:
-    "border border-surface-border-strong bg-surface-raised text-ink hover:bg-surface-hover hover:border-ink-faint/60",
+    "border border-surface-border-strong bg-surface-raised text-ink shadow-sm hover:bg-surface-hover",
   ghost: "border border-transparent text-ink-muted hover:bg-surface-hover hover:text-ink",
-  danger: "border border-danger/40 bg-transparent text-danger hover:bg-danger/10 hover:border-danger/70",
-  "danger-solid": "border border-transparent bg-danger text-white hover:bg-danger/90",
+  danger: "border border-danger/30 bg-surface-raised text-danger hover:bg-danger/5 hover:border-danger/60",
+  "danger-solid": "border border-transparent bg-danger text-white shadow-sm hover:bg-danger/90",
 };
 
 const SIZE: Record<ButtonSize, string> = {
-  sm: "h-7 px-2.5 text-xs gap-1.5",
-  md: "h-8 px-3 text-sm gap-2",
+  sm: "h-8 px-3 text-xs gap-1.5",
+  md: "h-9 px-3.5 text-sm gap-2",
 };
 
 export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -49,8 +50,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       aria-busy={loading || undefined}
       {...props}
       className={cn(
-        "relative inline-flex select-none items-center justify-center whitespace-nowrap rounded-md font-medium",
-        "transition-colors duration-100 disabled:cursor-not-allowed disabled:opacity-50",
+        "relative inline-flex select-none items-center justify-center whitespace-nowrap rounded-lg font-medium",
+        "transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50",
         VARIANT[variant],
         SIZE[size],
         className,
@@ -83,7 +84,7 @@ export const IconButton = forwardRef<
       aria-label={label}
       title={label}
       {...props}
-      className={cn("px-0", size === "sm" ? "w-7" : "w-8", className)}
+      className={cn("px-0 shadow-none", size === "sm" ? "w-8" : "w-9", className)}
     >
       <Icon name={icon} size={size === "sm" ? 14 : 16} />
     </Button>

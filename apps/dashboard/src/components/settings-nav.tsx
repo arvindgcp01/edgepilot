@@ -85,13 +85,13 @@ export function SettingsNav() {
                         href={item.href}
                         aria-current={active ? "page" : undefined}
                         className={cn(
-                          "flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors",
+                          "flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors",
                           active
-                            ? "bg-surface-hover font-medium text-ink"
-                            : "text-ink-muted hover:bg-surface-hover/60 hover:text-ink",
+                            ? "bg-accent-subtle font-medium text-accent dark:text-accent-soft"
+                            : "text-ink-muted hover:bg-surface-hover hover:text-ink",
                         )}
                       >
-                        <Icon name={item.icon} size={15} className={active ? "text-ink" : "text-ink-faint"} />
+                        <Icon name={item.icon} size={15} className={active ? "text-accent dark:text-accent-soft" : "text-ink-faint"} />
                         {item.label}
                       </Link>
                     </li>
@@ -118,7 +118,7 @@ export function SettingsNav() {
               aria-current={active ? "page" : undefined}
               className={cn(
                 "flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap",
-                active ? "bg-surface-hover font-medium text-ink" : "text-ink-muted hover:text-ink",
+                active ? "bg-accent-subtle font-medium text-accent dark:text-accent-soft" : "text-ink-muted hover:text-ink",
               )}
             >
               <Icon name={item.icon} size={14} className={active ? "text-ink" : "text-ink-faint"} />

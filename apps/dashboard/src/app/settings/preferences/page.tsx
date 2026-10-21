@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Button, Callout, Field, PageHeader, Section, Select, Switch, useToast } from "@/components/ui";
+import { Button, Callout, Field, Icon, PageHeader, Section, Select, Switch, useToast, type IconName } from "@/components/ui";
+import { cn } from "@/lib/cn";
+import { readTheme, setTheme, type ThemePreference } from "@/lib/theme";
 
 type Prefs = {
   density: "comfortable" | "compact";
   timestamps: "relative" | "absolute";
   clock: "local" | "utc";
-  landing: "/" | "/enrollment" | "/settings/audit-logs";
+  landing: "/" | "/devices" | "/enrollment" | "/settings/audit-logs";
   page_size: 10 | 25 | 50;
   reduce_motion: boolean;
 };
@@ -56,8 +58,14 @@ export default function PreferencesPage() {
       <PageHeader title="Preferences" description="How this browser displays EdgePilot. Stored locally; not shared with other devices or members." />
       <div className="space-y-4">
         <Section
+          title="Theme"
+          description="Light for the office, dark for wall displays in dim rooms. System follows this computer's setting. Applies immediately."
+        >
+          <ThemePicker />
+        </Section>
+        <Section
           title="Appearance"
-          description="EdgePilot is dark by design — it is watched on wall displays in dim rooms. A light theme is not offered."
+          description="Layout and motion for this browser."
           footer={
             <>
               {dirty && <Button variant="ghost" onClick={() => setDraft(saved)}>Discard</Button>}
@@ -108,7 +116,8 @@ export default function PreferencesPage() {
             </Field>
             <Field label="Start on" htmlFor="landing" hint="The page that opens after sign-in.">
               <Select id="landing" value={draft.landing} onChange={(e) => setDraft({ ...draft, landing: e.target.value as Prefs["landing"] })}>
-                <option value="/">Fleet</option>
+                <option value="/">Overview</option>
+                <option value="/devices">Devices</option>
                 <option value="/enrollment">Enrollment</option>
                 <option value="/settings/audit-logs">Audit logs</option>
               </Select>
@@ -118,5 +127,74 @@ export default function PreferencesPage() {
         </Section>
       </div>
     </>
+  );
+}
+
+const THEMES: { value: ThemePreference; label: string; icon: IconName }[] = [
+  { value: "light", label: "Light", icon: "sun" },
+  { value: "dark", label: "Dark", icon: "moon" },
+  { value: "system", label: "System", icon: "monitor" },
+];
+
+/** Three preview cards. Applies on click: a theme is judged by looking at it,
+ *  and a Save button between the choice and the result only gets in the way. */
+function ThemePicker() {
+  const [pref, setPref] = useState<ThemePreference>("system");
+  useEffect(() => setPref(readTheme()), []);
+
+  return (
+    <div role="radiogroup" aria-label="Theme" className="grid gap-3 sm:grid-cols-3">
+      {THEMES.map((t) => {
+        const selected = pref === t.value;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={() => {
+              setTheme(t.value);
+              setPref(t.value);
+            }}
+            className={cn(
+              "overflow-hidden rounded-xl border text-left transition-all",
+              selected ? "border-accent ring-4 ring-accent/10" : "border-surface-border hover:border-surface-border-strong",
+            )}
+          >
+            <ThemePreview kind={t.value} />
+            <span className="flex items-center gap-2 border-t border-surface-border px-3 py-2.5 text-sm font-medium text-ink">
+              <Icon name={t.icon} size={14} className="text-ink-muted" />
+              {t.label}
+              {selected && <Icon name="check-circle" size={15} className="ml-auto text-accent" />}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ThemePreview({ kind }: { kind: ThemePreference }) {
+  const pane = (dark: boolean) => (
+    <div className={cn("flex h-full flex-1 gap-1.5 p-2.5", dark ? "bg-[#0b0e14]" : "bg-[#f7f8fa]")}>
+      <div className={cn("w-1/4 rounded-md", dark ? "bg-[#12161f]" : "bg-white ring-1 ring-black/5")} />
+      <div className="flex flex-1 flex-col gap-1.5">
+        <div className={cn("h-2 w-1/2 rounded", dark ? "bg-[#2c3746]" : "bg-slate-300")} />
+        <div className={cn("flex-1 rounded-md", dark ? "bg-[#12161f]" : "bg-white ring-1 ring-black/5")} />
+        <div className="h-2 w-1/3 rounded bg-indigo-500" />
+      </div>
+    </div>
+  );
+  return (
+    <div className="flex h-24">
+      {kind === "light" && pane(false)}
+      {kind === "dark" && pane(true)}
+      {kind === "system" && (
+        <>
+          {pane(false)}
+          {pane(true)}
+        </>
+      )}
+    </div>
   );
 }

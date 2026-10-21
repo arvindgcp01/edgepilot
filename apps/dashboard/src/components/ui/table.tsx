@@ -25,7 +25,7 @@ export function Table({ className, children }: { className?: string; children: R
 
 export function THead({ children, sticky }: { children: React.ReactNode; sticky?: boolean }) {
   return (
-    <thead className={cn("bg-surface-raised", sticky && "sticky top-0 z-10")}>
+    <thead className={cn("bg-surface-sunken/70", sticky && "sticky top-0 z-10")}>
       {children}
     </thead>
   );
@@ -47,7 +47,7 @@ export function Tr({
       {...props}
       className={cn(
         "transition-colors",
-        interactive && "cursor-pointer hover:bg-surface-hover/60",
+        interactive && "cursor-pointer hover:bg-surface-hover/70",
         selected && "bg-accent/5",
         className,
       )}
@@ -68,7 +68,7 @@ export function Th({
       scope="col"
       {...props}
       className={cn(
-        "h-9 whitespace-nowrap border-b border-surface-border px-3 text-xs font-medium text-ink-muted first:pl-4 last:pr-4",
+        "h-10 whitespace-nowrap border-b border-surface-border px-3 text-xs font-medium text-ink-muted first:pl-5 last:pr-5",
         align === "right" && "text-right",
         align === "center" && "text-center",
         align === "left" && "text-left",
@@ -90,7 +90,7 @@ export function Td({
     <td
       {...props}
       className={cn(
-        "px-3 py-2.5 align-middle first:pl-4 last:pr-4",
+        "px-3 py-3 align-middle first:pl-5 last:pr-5",
         align === "right" && "text-right",
         align === "center" && "text-center",
         className,

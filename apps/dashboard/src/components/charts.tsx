@@ -22,7 +22,7 @@ import type { MetricPoint } from "@/lib/api/devices";
 
 /** Validated categorical slots for the dark surface (blue, orange, aqua). A
  *  chart here never has more than three series. */
-export const SERIES = ["#3987e5", "#d95926", "#199e70"] as const;
+export const SERIES = ["#6366f1", "#f97316", "#10b981"] as const;
 
 export type Series = { name: string; points: MetricPoint[]; color?: string };
 
@@ -206,8 +206,8 @@ export function LineChart({
 
           {ticks.map((t) => (
             <g key={t}>
-              <line x1={pad.left} x2={pad.left + innerW} y1={y(t)} y2={y(t)} stroke="#1f2733" strokeWidth={1} />
-              <text x={pad.left - 6} y={y(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#5c6874" className="tabular">
+              <line x1={pad.left} x2={pad.left + innerW} y1={y(t)} y2={y(t)} className="stroke-surface-border" strokeWidth={1} />
+              <text x={pad.left - 6} y={y(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} className="tabular fill-ink-faint">
                 {format(t)}
               </text>
             </g>
@@ -219,7 +219,7 @@ export function LineChart({
               y={height - 6}
               textAnchor={i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle"}
               fontSize={10}
-              fill="#5c6874"
+              className="fill-ink-faint"
             >
               {timeLabel(t, to - from)}
             </text>
@@ -255,7 +255,7 @@ export function LineChart({
 
           {hover && (
             <g>
-              <line x1={hover.x} x2={hover.x} y1={pad.top} y2={pad.top + innerH} stroke="#5c6874" strokeWidth={1} />
+              <line x1={hover.x} x2={hover.x} y1={pad.top} y2={pad.top + innerH} className="stroke-ink-faint" strokeWidth={1} />
               {hover.values.map((v, i) =>
                 v.value === null ? null : (
                   <circle
@@ -264,7 +264,7 @@ export function LineChart({
                     cy={y(v.value)}
                     r={4}
                     fill={v.color ?? SERIES[i % SERIES.length]}
-                    stroke="#10151e"
+                    className="stroke-surface-raised"
                     strokeWidth={2}
                   />
                 ),

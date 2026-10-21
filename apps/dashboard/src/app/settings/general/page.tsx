@@ -20,7 +20,7 @@ export default function GeneralPage() {
       <div className="space-y-4">
         <Section title="At a glance" description="Live counts, with a shortcut to each area.">
           <div className="grid gap-3 sm:grid-cols-3">
-            <Stat label="Devices" value={fleet.data?.total} sub={fleet.data ? `${fleet.data.online} online` : undefined} onClick={() => router.push("/")} />
+            <Stat label="Devices" value={fleet.data?.total} sub={fleet.data ? `${fleet.data.online} online` : undefined} onClick={() => router.push("/devices")} />
             <Stat label="Members" value={users.data?.data.length} sub={users.data ? `${users.data.data.filter((u) => u.status === "active").length} active` : undefined} onClick={() => router.push("/settings/users")} />
             <Stat label="Awaiting approval" value={fleet.data?.pending_approval} sub="devices" onClick={() => router.push("/?status=pending")} />
           </div>

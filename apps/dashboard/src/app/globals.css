@@ -2,14 +2,91 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens, as RGB channels so Tailwind's opacity modifiers work.
+ *
+ * Light is the default. Dark is applied by the `dark` class on <html>, which
+ * the inline script in layout.tsx sets before first paint from the operator's
+ * preference — "system" follows the OS. Wall displays in dim rooms are what
+ * dark is for, and it is one click away in Preferences or the ⌘K palette.
+ */
 :root {
+  color-scheme: light;
+
+  --surface: 247 248 250;
+  --surface-sunken: 241 243 246;
+  --surface-raised: 255 255 255;
+  --surface-overlay: 255 255 255;
+  --surface-hover: 243 244 247;
+  --surface-border: 228 231 236;
+  --surface-border-strong: 208 213 221;
+
+  --ink: 15 23 42;
+  --ink-muted: 71 85 105;
+  --ink-faint: 136 148 166;
+  --ink-inverse: 255 255 255;
+
+  --accent: 79 70 229;
+  --accent-hover: 67 56 202;
+  --accent-soft: 79 70 229;
+  --accent-subtle: 238 242 255;
+
+  --online: 22 163 74;
+  --offline: 100 116 139;
+  --degraded: 217 119 6;
+  --pending: 37 99 235;
+  --danger: 220 38 38;
+  --success: 22 163 74;
+  --warning: 217 119 6;
+
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.04), 0 1px 3px rgb(16 24 40 / 0.05);
+  --shadow-overlay: 0 0 0 1px rgb(var(--surface-border)), 0 16px 40px -12px rgb(16 24 40 / 0.22);
+  --shadow-drawer: -12px 0 40px -12px rgb(16 24 40 / 0.18);
+}
+
+.dark {
   color-scheme: dark;
+
+  --surface: 11 14 20;
+  --surface-sunken: 7 9 13;
+  --surface-raised: 18 22 31;
+  --surface-overlay: 23 28 39;
+  --surface-hover: 26 32 44;
+  --surface-border: 35 42 55;
+  --surface-border-strong: 48 58 74;
+
+  --ink: 230 237 243;
+  --ink-muted: 148 160 176;
+  --ink-faint: 100 112 126;
+  --ink-inverse: 11 14 20;
+
+  --accent: 99 102 241;
+  --accent-hover: 88 91 230;
+  --accent-soft: 165 168 255;
+  --accent-subtle: 30 32 64;
+
+  --online: 63 185 80;
+  --offline: 110 118 129;
+  --degraded: 210 153 34;
+  --pending: 88 166 255;
+  --danger: 248 81 73;
+  --success: 63 185 80;
+  --warning: 210 153 34;
+
+  --shadow-card: 0 0 0 1px rgb(0 0 0 / 0);
+  --shadow-overlay: 0 0 0 1px rgb(var(--surface-border)), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+  --shadow-drawer: -8px 0 32px -8px rgb(0 0 0 / 0.6);
 }
 
 html {
-  /* Numbers line up in tables without every cell opting in. */
-  font-feature-settings: "tnum" 1, "cv11" 1;
+  font-feature-settings: "cv11" 1;
   text-rendering: optimizeLegibility;
+}
+
+/* Numbers line up in tables without every cell opting in. Scoped to tables so
+   prose and hostnames keep Inter's proportional figures. */
+table {
+  font-variant-numeric: tabular-nums;
 }
 
 body {
@@ -19,14 +96,12 @@ body {
 /* Focus is never removed, only restyled. An operator who navigates by keyboard
    through a fleet table must be able to see where they are. */
 :focus-visible {
-  @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-surface;
+  @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-surface;
 }
 
-/* Dense tables are the product. A scrollbar the width of a column header is a
-   scrollbar that competes with the data. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2c3746 transparent;
+  scrollbar-color: rgb(var(--surface-border-strong)) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
@@ -42,11 +117,11 @@ body {
 /* Native controls that are hard to restyle inherit the theme instead. */
 input[type="checkbox"],
 input[type="radio"] {
-  accent-color: #3b82f6;
+  accent-color: rgb(var(--accent));
 }
 
 select {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b98a9' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238894a6' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.5rem center;
 }

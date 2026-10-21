@@ -14,8 +14,8 @@ export function Card({
   return (
     <div
       className={cn(
-        "rounded-lg border border-surface-border bg-surface-raised",
-        padded && "p-5",
+        "rounded-xl border border-surface-border bg-surface-raised shadow-card",
+        padded && "p-6",
         className,
       )}
     >
@@ -44,13 +44,13 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <div className={cn("mb-6 flex flex-wrap items-start justify-between gap-4", className)}>
+    <div className={cn("mb-8 flex flex-wrap items-end justify-between gap-4", className)}>
       <div className="min-w-0">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
           {meta}
         </div>
-        {description && <p className="mt-1 max-w-2xl text-sm text-ink-muted">{description}</p>}
+        {description && <p className="mt-1.5 max-w-2xl text-sm text-ink-muted">{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
@@ -58,9 +58,9 @@ export function PageHeader({
 }
 
 /**
- * Summary numbers as one quiet row, not a grid of cards. Five numbers in five
- * boxes take a third of the viewport and say the same thing this says in one
- * line; the table beneath them is what the operator came for.
+ * Summary numbers as a row of compact cards. Each is a label, a number, and an
+ * optional hint — no sparkline, no icon soup — so the row stays one glance tall
+ * and the table beneath it is still what the eye lands on next.
  */
 export function StatStrip({
   items,
@@ -70,16 +70,15 @@ export function StatStrip({
   className?: string;
 }) {
   return (
-    <div
-      className={cn(
-        "flex flex-wrap divide-surface-border rounded-lg border border-surface-border bg-surface-raised sm:divide-x",
-        className,
-      )}
-    >
+    <div className={cn("grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6", className)}>
       {items.map((item) => (
-        <div key={item.label} className="min-w-[8rem] flex-1 px-4 py-3" title={item.hint}>
-          <div className="text-xs font-medium text-ink-faint">{item.label}</div>
-          <div className={cn("mt-0.5 text-lg font-semibold tabular leading-tight", item.tone ?? "text-ink")}>
+        <div
+          key={item.label}
+          className="rounded-xl border border-surface-border bg-surface-raised px-4 py-3.5 shadow-card"
+          title={item.hint}
+        >
+          <div className="text-xs font-medium text-ink-muted">{item.label}</div>
+          <div className={cn("mt-1 text-2xl font-semibold tabular leading-tight tracking-tight", item.tone ?? "text-ink")}>
             {item.value}
           </div>
         </div>
@@ -111,12 +110,12 @@ export function Section({
   return (
     <section
       className={cn(
-        "rounded-lg border bg-surface-raised",
+        "rounded-xl border bg-surface-raised shadow-card",
         tone === "danger" ? "border-danger/40" : "border-surface-border",
         className,
       )}
     >
-      <div className="grid gap-6 p-5 md:grid-cols-[minmax(0,14rem)_1fr]">
+      <div className="grid gap-6 p-6 md:grid-cols-[minmax(0,15rem)_1fr]">
         <div>
           <h2 className={cn("text-sm font-semibold", tone === "danger" ? "text-danger" : "text-ink")}>
             {title}
@@ -128,7 +127,7 @@ export function Section({
       {footer && (
         <div
           className={cn(
-            "flex items-center justify-end gap-2 border-t px-5 py-3",
+            "flex items-center justify-end gap-2 rounded-b-xl border-t bg-surface-sunken/60 px-6 py-3",
             tone === "danger" ? "border-danger/30" : "border-surface-border",
           )}
         >
@@ -164,12 +163,12 @@ export function Facts({
 }
 
 const AVATAR_TONES = [
-  "bg-accent/20 text-accent-soft",
-  "bg-online/20 text-online",
-  "bg-degraded/20 text-degraded",
-  "bg-[#a371f7]/20 text-[#c4a6ff]",
-  "bg-[#f778ba]/20 text-[#ffadd6]",
-  "bg-[#39c5cf]/20 text-[#7ee7ef]",
+  "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
+  "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+  "bg-pink-500/15 text-pink-700 dark:text-pink-300",
+  "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
 ];
 
 /** Initials on a tinted disc. The tint is derived from the name so the same

@@ -1,64 +1,79 @@
 import type { Config } from "tailwindcss";
 
-// Dark first. These machines are watched on a wall display in a room that is
-// usually dim, and a white dashboard at 2 a.m. is a dashboard nobody looks at.
-//
-// The palette is deliberately narrow. Surfaces step up in three increments,
-// text steps down in three, and colour is reserved for state — a status, an
-// action, a warning. Anything that is neither structure nor state is grey.
+/**
+ * Light first, dark on request.
+ *
+ * Every colour is a CSS variable holding RGB channels (see globals.css), so the
+ * same class — `bg-surface-raised`, `text-ink-muted` — renders correctly in both
+ * themes and opacity modifiers like `bg-accent/10` keep working. Components never
+ * name a theme; they name a role.
+ *
+ * The palette is deliberately narrow. Surfaces step up in three increments,
+ * text steps down in three, and colour is reserved for brand and state — the
+ * primary action, a status, a warning. Anything that is neither is grey.
+ */
+const token = (name: string) => `rgb(var(--${name}) / <alpha-value>)`;
+
 export default {
   content: ["./src/**/*.{ts,tsx}"],
+  darkMode: "class",
   theme: {
     extend: {
       colors: {
         surface: {
-          // Page background, then panels, then popovers. Each step is the
-          // smallest that still reads as "in front of" the one below it.
-          DEFAULT: "#0b0e14",
-          sunken: "#07090d",
-          raised: "#10151e",
-          overlay: "#151b26",
-          hover: "#161d29",
-          border: "#1f2733",
-          "border-strong": "#2c3746",
+          // Page background, then cards, then popovers.
+          DEFAULT: token("surface"),
+          sunken: token("surface-sunken"),
+          raised: token("surface-raised"),
+          overlay: token("surface-overlay"),
+          hover: token("surface-hover"),
+          border: token("surface-border"),
+          "border-strong": token("surface-border-strong"),
         },
         ink: {
-          DEFAULT: "#e6edf3",
-          muted: "#8b98a9",
-          faint: "#5c6874",
-          inverse: "#0b0e14",
+          DEFAULT: token("ink"),
+          muted: token("ink-muted"),
+          faint: token("ink-faint"),
+          inverse: token("ink-inverse"),
         },
-        // The one interactive colour. Status blue (`pending`) is a different
-        // token on purpose: a button and a "waiting for approval" badge must be
-        // able to diverge without one dragging the other.
+        // The brand and the one interactive colour. Status blue (`pending`) is
+        // a different token on purpose: a button and a "waiting for approval"
+        // badge must be able to diverge without one dragging the other.
         accent: {
-          DEFAULT: "#3b82f6",
-          hover: "#2f74e6",
-          soft: "#58a6ff",
+          DEFAULT: token("accent"),
+          hover: token("accent-hover"),
+          soft: token("accent-soft"),
+          subtle: token("accent-subtle"),
         },
         // Status colours are semantic, not decorative: they are the fastest
         // read on the page and must not drift between views.
-        online: "#3fb950",
-        offline: "#6e7681",
-        degraded: "#d29922",
-        pending: "#58a6ff",
-        danger: "#f85149",
-        success: "#3fb950",
-        warning: "#d29922",
+        online: token("online"),
+        offline: token("offline"),
+        degraded: token("degraded"),
+        pending: token("pending"),
+        danger: token("danger"),
+        success: token("success"),
+        warning: token("warning"),
       },
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+        sans: ["var(--font-sans)", "Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       fontSize: {
         "2xs": ["0.6875rem", { lineHeight: "1rem" }],
       },
+      borderRadius: {
+        // One step rounder than Tailwind's defaults: the softer corner is most
+        // of what reads as "modern product" rather than "admin panel".
+        md: "0.5rem",
+        lg: "0.75rem",
+        xl: "1rem",
+      },
       boxShadow: {
-        // One ring, one soft drop. Popovers and drawers sit on a dark page, so
-        // the ring does most of the work; the shadow only separates overlapping
-        // dark surfaces.
-        overlay: "0 0 0 1px #1f2733, 0 12px 32px -8px rgba(0, 0, 0, 0.6)",
-        drawer: "-8px 0 32px -8px rgba(0, 0, 0, 0.6)",
+        card: "var(--shadow-card)",
+        overlay: "var(--shadow-overlay)",
+        drawer: "var(--shadow-drawer)",
+        focus: "0 0 0 3px rgb(var(--accent) / 0.25)",
       },
       keyframes: {
         "fade-in": { from: { opacity: "0" }, to: { opacity: "1" } },
@@ -66,9 +81,17 @@ export default {
           from: { transform: "translateX(16px)", opacity: "0" },
           to: { transform: "translateX(0)", opacity: "1" },
         },
+        "slide-in-left": {
+          from: { transform: "translateX(-16px)", opacity: "0" },
+          to: { transform: "translateX(0)", opacity: "1" },
+        },
         "slide-up": {
           from: { transform: "translateY(6px)", opacity: "0" },
           to: { transform: "translateY(0)", opacity: "1" },
+        },
+        "scale-in": {
+          from: { transform: "scale(0.98)", opacity: "0" },
+          to: { transform: "scale(1)", opacity: "1" },
         },
         shimmer: {
           "0%": { backgroundPosition: "-200% 0" },
@@ -76,9 +99,11 @@ export default {
         },
       },
       animation: {
-        "fade-in": "fade-in 120ms ease-out",
-        "slide-in-right": "slide-in-right 160ms ease-out",
-        "slide-up": "slide-up 120ms ease-out",
+        "fade-in": "fade-in 150ms ease-out",
+        "slide-in-right": "slide-in-right 180ms ease-out",
+        "slide-in-left": "slide-in-left 180ms ease-out",
+        "slide-up": "slide-up 150ms ease-out",
+        "scale-in": "scale-in 140ms ease-out",
         shimmer: "shimmer 1.6s linear infinite",
       },
     },

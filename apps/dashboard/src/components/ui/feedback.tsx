@@ -77,7 +77,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   return (
     <div
       role={toast.tone === "error" ? "alert" : "status"}
-      className="pointer-events-auto flex animate-slide-up items-start gap-3 rounded-lg border border-surface-border bg-surface-overlay p-3 shadow-overlay"
+      className="pointer-events-auto flex animate-slide-up items-start gap-3 rounded-xl border border-surface-border bg-surface-overlay p-3.5 shadow-overlay"
     >
       <Icon name={icon.name} className={cn("mt-0.5", icon.className)} />
       <div className="min-w-0 flex-1">
@@ -125,7 +125,7 @@ export function Skeleton({ className }: { className?: string }) {
     <div
       aria-hidden
       className={cn(
-        "animate-shimmer rounded bg-[linear-gradient(90deg,#10151e_25%,#161d29_50%,#10151e_75%)] bg-[length:200%_100%]",
+        "animate-shimmer rounded bg-[linear-gradient(90deg,rgb(var(--surface-hover))_25%,rgb(var(--surface-border))_50%,rgb(var(--surface-hover))_75%)] bg-[length:200%_100%]",
         className,
       )}
     />
@@ -168,11 +168,11 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col items-center px-6 py-14 text-center", className)}>
-      <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-md border border-surface-border bg-surface text-ink-faint">
+    <div className={cn("flex flex-col items-center px-6 py-16 text-center", className)}>
+      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-subtle text-accent">
         <Icon name={icon} />
       </div>
-      <div className="text-sm font-medium text-ink">{title}</div>
+      <div className="text-base font-semibold text-ink">{title}</div>
       {description && <p className="mt-1 max-w-sm text-sm text-ink-muted">{description}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
@@ -192,7 +192,7 @@ export function ErrorNote({ error, onRetry }: { error: unknown; onRetry?: () => 
   return (
     <div
       role="alert"
-      className="mb-4 flex items-start gap-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-danger"
+      className="mb-4 flex items-start gap-3 rounded-lg border border-danger/30 bg-danger/5 px-3.5 py-3 text-sm text-danger"
     >
       <Icon name="warning" className="mt-0.5" />
       <div className="min-w-0 flex-1">
@@ -242,7 +242,7 @@ export function Callout({
   const icon: IconName = tone === "info" ? "info" : "warning";
   const iconTone = { info: "text-pending", warning: "text-degraded", danger: "text-danger" }[tone];
   return (
-    <div className={cn("flex gap-3 rounded-md border px-3 py-2.5 text-sm", style, className)}>
+    <div className={cn("flex gap-3 rounded-lg border px-3.5 py-3 text-sm", style, className)}>
       <Icon name={icon} className={cn("mt-0.5", iconTone)} />
       <div className="min-w-0">
         {title && <strong className="block font-medium">{title}</strong>}

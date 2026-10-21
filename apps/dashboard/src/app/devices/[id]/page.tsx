@@ -5,9 +5,10 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import {
-  Badge, Button, Card, Code, ConfirmDialog, ErrorNote, Facts, Field, Icon, Input, Skeleton,
-  StatusBadge, Table, TBody, Td, Th, THead, Tr, useToast,
+  Badge, Button, Card, Code, ConfirmDialog, EmptyState, ErrorNote, Facts, Field, Icon, Input, Section, Skeleton,
+  StatusBadge, Table, Tabs, TBody, Td, Textarea, Th, THead, Tr, useToast, type IconName,
 } from "@/components/ui";
+import { cn } from "@/lib/cn";
 import { can } from "@/lib/api/client";
 import {
   approveDevice, decommissionDevice, getDevice, listDeviceSSHSessions, rejectDevice,
@@ -17,7 +18,7 @@ import {
 import { absoluteTime, bytes, relativeTime } from "@/lib/format";
 import { DeviceMonitoring } from "@/components/device-monitoring";
 import { DeviceScreen } from "@/components/device-screen";
-import { Card as _Card } from "@/components/ui";
+import { DeviceTerminal } from "@/components/terminal";
 
 /**
  * The page is a shell around the content.
@@ -47,6 +48,8 @@ function DeviceView() {
   const [confirmDecommission, setConfirmDecommission] = useState(false);
   const [screenOpen, setScreenOpen] = useState(false);
   const [togglingScreen, setTogglingScreen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [tab, setTab] = useState<DeviceTab>("overview");
 
   const load = useCallback(async () => {
     try {
@@ -79,137 +82,213 @@ function DeviceView() {
   if (!device) return <ErrorNote error={error} onRetry={() => void load()} />;
 
   const name = device.hostname || "(unnamed)";
+  const canConnect = can("ssh:connect") && device.status === "online" && device.approved;
+
+  const screenButton = can("screen:connect") && device.approved && (
+    <Button
+      icon="monitor"
+      disabled={busy || (!device.screen_sharing_enabled && togglingScreen)}
+      title={device.screen_sharing_enabled ? "Open the device's desktop" : "Enable remote screen for this device"}
+      onClick={async () => {
+        if (device.screen_sharing_enabled) {
+          setScreenOpen(true);
+          return;
+        }
+        // First use: enable it, then wait for the agent to apply the setting
+        // before opening — the VNC server is not listening the instant the row
+        // flips.
+        setTogglingScreen(true);
+        try {
+          await setDeviceScreenSharing(device.id, true);
+          await load();
+          push({ title: "Remote screen enabled", description: "Giving the device a moment to start Screen Sharing…", tone: "success" });
+          setTimeout(() => setScreenOpen(true), 2500);
+        } catch (err) {
+          push({ title: "Could not enable remote screen", description: err instanceof Error ? err.message : undefined, tone: "error" });
+        } finally {
+          setTogglingScreen(false);
+        }
+      }}
+    >
+      {device.screen_sharing_enabled ? "Remote screen" : togglingScreen ? "Enabling…" : "Enable screen"}
+    </Button>
+  );
+
+  const specs: { icon: IconName; label: string; value: string }[] = [
+    { icon: "monitor", label: "Model", value: device.model_name || device.model_identifier || "—" },
+    { icon: "cpu", label: "Chip", value: [device.chip, device.memory_bytes ? bytes(device.memory_bytes) : null].filter(Boolean).join(" · ") || "—" },
+    { icon: "layers", label: "OS", value: device.os_version ? `${device.os_name || "macOS"} ${device.os_version}` : "—" },
+    { icon: "package", label: "Agent", value: device.agent_version || "—" },
+    { icon: "map-pin", label: "Site", value: device.site || "—" },
+    { icon: "clock", label: "Last seen", value: relativeTime(device.last_seen_at) },
+  ];
 
   return (
     <>
-      <div className="mb-6">
-        <Link href="/" className="mb-3 inline-flex items-center gap-1 text-xs text-ink-muted hover:text-ink">
-          <Icon name="arrow-left" size={12} /> Fleet
-        </Link>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-xl font-semibold tracking-tight">{name}</h1>
-              <StatusBadge status={device.status} />
-              {!device.approved && <Badge tone="info">Awaiting approval</Badge>}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-muted">
-              {device.client_name && <span className="text-ink">{device.client_name}</span>}
-              <span className="font-mono text-xs">{device.serial_number}</span>
-              {device.site && <span>· {device.site}</span>}
-              <span>· seen {relativeTime(device.last_seen_at)}</span>
+      <nav aria-label="Breadcrumb" className="mb-4 flex items-center gap-1.5 text-sm text-ink-muted">
+        <Link href="/devices" className="hover:text-ink">Devices</Link>
+        <Icon name="chevron-right" size={14} className="text-ink-faint" />
+        <span className="truncate font-medium text-ink">{name}</span>
+      </nav>
+
+      <Card padded={false} className="mb-6 overflow-hidden">
+        <div className="flex flex-wrap items-start justify-between gap-6 p-6">
+          <div className="flex min-w-0 items-start gap-4">
+            <span
+              className={cn(
+                "flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl",
+                device.status === "online" ? "bg-online/10 text-online"
+                  : device.status === "degraded" ? "bg-degraded/10 text-degraded"
+                    : device.status === "pending" ? "bg-pending/10 text-pending"
+                      : "bg-surface-hover text-ink-faint",
+              )}
+            >
+              <Icon name={/studio/i.test(device.model_name ?? "") ? "server" : "monitor"} size={26} />
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h1 className="truncate text-2xl font-semibold tracking-tight text-ink">{name}</h1>
+                <StatusBadge status={device.status} />
+                {!device.approved && <Badge tone="info">Awaiting approval</Badge>}
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-muted">
+                {device.client_name ? (
+                  <span className="inline-flex items-center gap-1.5 font-medium text-ink">
+                    <Icon name="building" size={14} className="text-ink-faint" /> {device.client_name}
+                  </span>
+                ) : (
+                  <span className="text-ink-faint">No client set</span>
+                )}
+                <span className="text-ink-faint">·</span>
+                <span className="font-mono text-xs">{device.serial_number}</span>
+              </div>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {!device.approved && can("device:approve") && (
               <>
-                <Button variant="primary" icon="check" disabled={busy} onClick={() => void act(() => approveDevice(device.id), `${name} approved`)}>
-                  Approve
-                </Button>
                 <Button disabled={busy} onClick={() => void act(() => rejectDevice(device.id), `${name} rejected`)}>
                   Reject
                 </Button>
+                <Button variant="primary" icon="check" disabled={busy} onClick={() => void act(() => approveDevice(device.id), `${name} approved`)}>
+                  Approve device
+                </Button>
               </>
             )}
-            {can("screen:connect") && device.approved && (
-              <Button
-                icon="monitor"
-                disabled={busy || (!device.screen_sharing_enabled && togglingScreen)}
-                title={device.screen_sharing_enabled ? "Open the device's desktop" : "Enable remote screen for this device"}
-                onClick={async () => {
-                  if (device.screen_sharing_enabled) {
-                    setScreenOpen(true);
-                    return;
-                  }
-                  // First use: enable it, then wait for the agent to apply the
-                  // setting before opening — the VNC server is not listening the
-                  // instant the row flips.
-                  setTogglingScreen(true);
-                  try {
-                    await setDeviceScreenSharing(device.id, true);
-                    await load();
-                    push({ title: "Remote screen enabled", description: "Giving the device a moment to start Screen Sharing…", tone: "success" });
-                    setTimeout(() => setScreenOpen(true), 2500);
-                  } catch (err) {
-                    push({ title: "Could not enable remote screen", description: err instanceof Error ? err.message : undefined, tone: "error" });
-                  } finally {
-                    setTogglingScreen(false);
-                  }
-                }}
-              >
-                {device.screen_sharing_enabled ? "Remote screen" : togglingScreen ? "Enabling…" : "Enable screen"}
-              </Button>
-            )}
-            {can("device:delete") && (
-              <Button variant="danger" disabled={busy} onClick={() => setConfirmDecommission(true)}>
-                Decommission
+            {screenButton}
+            {canConnect && (
+              <Button variant={device.approved ? "primary" : "secondary"} icon="terminal" onClick={() => setTerminalOpen(true)}>
+                Open terminal
               </Button>
             )}
           </div>
         </div>
-      </div>
+
+        <dl className="grid grid-cols-2 border-t border-surface-border bg-surface-sunken/50 sm:grid-cols-3 xl:grid-cols-6">
+          {specs.map((spec) => (
+            <div key={spec.label} className="min-w-0 border-surface-border px-6 py-4 [&:not(:last-child)]:border-r">
+              <dt className="flex items-center gap-1.5 text-xs font-medium text-ink-faint">
+                <Icon name={spec.icon} size={13} /> {spec.label}
+              </dt>
+              <dd className="mt-1 truncate text-sm font-medium text-ink" title={spec.value}>{spec.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
 
       <ErrorNote error={error} />
 
-      {screenOpen && device.screen_sharing_enabled && (
-        <_Card className="mb-6 h-[36rem] overflow-hidden" padded={false}>
-          <DeviceScreen deviceId={device.id} hostname={name} onClose={() => setScreenOpen(false)} />
-        </_Card>
+      {terminalOpen && (
+        <Card className="mb-6 h-[28rem] overflow-hidden" padded={false}>
+          <DeviceTerminal deviceId={device.id} hostname={name} onClose={() => setTerminalOpen(false)} />
+        </Card>
       )}
 
-      <div className="mb-6">
-        <DeviceMonitoring device={device} />
-      </div>
-
-      <h2 className="mb-3 text-sm font-semibold text-ink">Inventory</h2>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardTitle>General</CardTitle>
-          <Facts mono rows={[
-            { label: "Serial number", value: device.serial_number },
-            { label: "Device ID", value: device.id },
-            { label: "Enrollment", value: device.enrollment_state },
-            { label: "First enrolled", value: absoluteTime(device.first_enrolled_at) },
-            { label: "Last seen", value: `${relativeTime(device.last_seen_at)} · ${absoluteTime(device.last_seen_at)}` },
-            { label: "Last boot", value: absoluteTime(device.last_boot_at) },
-            { label: "Agent version", value: device.agent_version || "—" },
-          ]} />
+      {screenOpen && device.screen_sharing_enabled && (
+        <Card className="mb-6 h-[36rem] overflow-hidden" padded={false}>
+          <DeviceScreen deviceId={device.id} hostname={name} onClose={() => setScreenOpen(false)} />
         </Card>
+      )}
 
-        <Card>
-          <CardTitle>Hardware</CardTitle>
-          <Facts mono rows={[
-            { label: "Model", value: device.model_name || device.model_identifier || "—" },
-            { label: "Identifier", value: device.model_identifier || "—" },
-            { label: "Chip", value: device.chip || "—" },
-            { label: "Architecture", value: device.arch || "—" },
-            { label: "CPU cores", value: device.cpu_cores ? String(device.cpu_cores) : "—" },
-            { label: "Memory", value: bytes(device.memory_bytes) },
-            { label: "Disk", value: bytes(device.disk_total_bytes) },
-            { label: "Hardware UUID", value: device.hardware_uuid || "—" },
-          ]} />
-        </Card>
+      <Tabs<DeviceTab>
+        aria-label="Device sections"
+        className="mb-6"
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { value: "overview", label: "Monitoring" },
+          { value: "inventory", label: "Hardware & network" },
+          ...(can("ssh:read") ? [{ value: "access" as DeviceTab, label: "Access log" }] : []),
+          { value: "settings", label: "Settings" },
+        ]}
+      />
 
-        <Card>
-          <CardTitle>Operating system & network</CardTitle>
-          <Facts mono rows={[
-            { label: "Name", value: device.os_name || "—" },
-            { label: "Version", value: device.os_version || "—" },
-            { label: "Build", value: device.os_build || "—" },
-            { label: "Local IP", value: device.local_ip || "—" },
-            { label: "Public IP", value: device.public_ip || "—" },
-          ]} />
-        </Card>
+      {tab === "overview" && <DeviceMonitoring device={device} />}
 
-        <EditableCard device={device} onSaved={load} />
+      {tab === "inventory" && (
+        <div className="grid gap-6 lg:grid-cols-3">
+          <Card>
+            <CardTitle icon="fingerprint">Identity</CardTitle>
+            <Facts mono rows={[
+              { label: "Serial number", value: <CopyValue value={device.serial_number} /> },
+              { label: "Device ID", value: <CopyValue value={device.id} /> },
+              { label: "Enrollment", value: device.enrollment_state },
+              { label: "First enrolled", value: absoluteTime(device.first_enrolled_at) },
+              { label: "Last seen", value: absoluteTime(device.last_seen_at) },
+              { label: "Last boot", value: absoluteTime(device.last_boot_at) },
+              { label: "Agent", value: device.agent_version || "—" },
+            ]} />
+          </Card>
+          <Card>
+            <CardTitle icon="cpu">Hardware</CardTitle>
+            <Facts mono rows={[
+              { label: "Model", value: device.model_name || device.model_identifier || "—" },
+              { label: "Identifier", value: device.model_identifier || "—" },
+              { label: "Chip", value: device.chip || "—" },
+              { label: "Architecture", value: device.arch || "—" },
+              { label: "CPU cores", value: device.cpu_cores ? String(device.cpu_cores) : "—" },
+              { label: "Memory", value: bytes(device.memory_bytes) },
+              { label: "Disk", value: bytes(device.disk_total_bytes) },
+              { label: "Hardware UUID", value: device.hardware_uuid || "—" },
+            ]} />
+          </Card>
+          <Card>
+            <CardTitle icon="globe">Software & network</CardTitle>
+            <Facts mono rows={[
+              { label: "OS", value: device.os_name || "—" },
+              { label: "Version", value: device.os_version || "—" },
+              { label: "Build", value: device.os_build || "—" },
+              { label: "Local IP", value: device.local_ip ? <CopyValue value={device.local_ip} /> : "—" },
+              { label: "Public IP", value: device.public_ip ? <CopyValue value={device.public_ip} /> : "—" },
+            ]} />
+          </Card>
+        </div>
+      )}
 
-        {can("ssh:read") && (
-          <div className="lg:col-span-2">
-            <SessionsCard deviceId={device.id} />
-          </div>
-        )}
-      </div>
+      {tab === "access" && can("ssh:read") && <SessionsCard deviceId={device.id} />}
+
+      {tab === "settings" && (
+        <div className="space-y-6">
+          <EditableCard device={device} onSaved={load} />
+          {can("device:delete") && (
+            <Section
+              tone="danger"
+              title="Decommission device"
+              description="Revoke its certificates and remove it from the fleet. Its history is kept."
+            >
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <p className="max-w-lg text-sm text-ink-muted">
+                  The device disconnects immediately and cannot reconnect. Its serial number becomes available for a replacement.
+                </p>
+                <Button variant="danger" icon="trash" disabled={busy} onClick={() => setConfirmDecommission(true)}>
+                  Decommission
+                </Button>
+              </div>
+            </Section>
+          )}
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmDecommission}
@@ -227,7 +306,7 @@ function DeviceView() {
         onConfirm={async () => {
           await act(async () => {
             await decommissionDevice(device.id);
-            router.replace("/");
+            router.replace("/devices");
           }, `${name} decommissioned`);
         }}
       />
@@ -235,20 +314,59 @@ function DeviceView() {
   );
 }
 
-function CardTitle({ children }: { children: React.ReactNode }) {
-  return <h2 className="mb-4 text-sm font-semibold text-ink">{children}</h2>;
+type DeviceTab = "overview" | "inventory" | "access" | "settings";
+
+function CardTitle({ children, icon }: { children: React.ReactNode; icon?: IconName }) {
+  return (
+    <h2 className="mb-5 flex items-center gap-2 text-base font-semibold text-ink">
+      {icon && (
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-surface-hover text-ink-muted">
+          <Icon name={icon} size={14} />
+        </span>
+      )}
+      {children}
+    </h2>
+  );
+}
+
+/** A value with a copy button that appears on hover. */
+function CopyValue({ value }: { value: string }) {
+  const { push } = useToast();
+  return (
+    <span className="group inline-flex max-w-full items-center gap-1.5">
+      <span className="truncate">{value}</span>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard?.writeText(value);
+          push({ title: "Copied", description: value, tone: "success" });
+        }}
+        className="shrink-0 rounded p-0.5 text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
+        aria-label={`Copy ${value}`}
+      >
+        <Icon name="copy" size={12} />
+      </button>
+    </span>
+  );
 }
 
 function DeviceSkeleton() {
   return (
     <div role="status" aria-label="Loading">
-      <Skeleton className="mb-3 h-3 w-12" />
-      <Skeleton className="mb-2 h-6 w-64" />
-      <Skeleton className="mb-8 h-3.5 w-80" />
-      <div className="grid gap-4 lg:grid-cols-2">
-        {[0, 1, 2, 3].map((i) => (
+      <Skeleton className="mb-4 h-4 w-40" />
+      <Card className="mb-6">
+        <div className="flex items-center gap-4">
+          <Skeleton className="h-14 w-14 rounded-2xl" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-64" />
+            <Skeleton className="h-3.5 w-80" />
+          </div>
+        </div>
+      </Card>
+      <div className="grid gap-6 lg:grid-cols-3">
+        {[0, 1, 2].map((i) => (
           <Card key={i}>
-            <Skeleton className="mb-4 h-3.5 w-24" />
+            <Skeleton className="mb-4 h-4 w-24" />
             <div className="space-y-2.5">
               {[0, 1, 2, 3, 4].map((j) => <Skeleton key={j} className="h-3 w-full" />)}
             </div>
@@ -274,7 +392,7 @@ function EditableCard({ device, onSaved }: { device: Device; onSaved: () => Prom
 
   return (
     <Card>
-      <CardTitle>Operator notes</CardTitle>
+      <CardTitle icon="pencil">Details</CardTitle>
       <form
         className="space-y-4"
         onSubmit={async (event) => {
@@ -292,14 +410,16 @@ function EditableCard({ device, onSaved }: { device: Device; onSaved: () => Prom
           }
         }}
       >
-        <Field label="Client name" hint="Whose machine this is. Shown in the fleet table.">
-          <Input value={clientName} maxLength={200} disabled={!editable} onChange={(e) => setClientName(e.target.value)} />
-        </Field>
-        <Field label="Site">
-          <Input value={site} disabled={!editable} onChange={(e) => setSite(e.target.value)} placeholder="Chicago DC" />
-        </Field>
-        <Field label="Notes">
-          <Input value={notes} disabled={!editable} onChange={(e) => setNotes(e.target.value)} />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Client name" hint="Whose machine this is. Shown in the device list.">
+            <Input value={clientName} maxLength={200} disabled={!editable} onChange={(e) => setClientName(e.target.value)} />
+          </Field>
+          <Field label="Site" hint="Where it is installed.">
+            <Input value={site} disabled={!editable} onChange={(e) => setSite(e.target.value)} placeholder="Chicago DC" />
+          </Field>
+        </div>
+        <Field label="Notes" hint="Anything the next person on call should know about this machine.">
+          <Textarea value={notes} disabled={!editable} onChange={(e) => setNotes(e.target.value)} rows={3} />
         </Field>
 
         {device.labels && Object.keys(device.labels).length > 0 && (
@@ -349,15 +469,18 @@ function SessionsCard({ deviceId }: { deviceId: string }) {
 
   return (
     <Card padded={false}>
-      <div className="flex items-center justify-between px-5 pt-5 pb-3">
-        <h2 className="text-sm font-semibold text-ink">SSH sessions</h2>
+      <div className="flex items-center justify-between px-6 pb-4 pt-6">
+        <div>
+          <h2 className="text-base font-semibold text-ink">SSH sessions</h2>
+          <p className="mt-0.5 text-xs text-ink-faint">Who connected, from where, and for how long. Session content is end-to-end encrypted.</p>
+        </div>
         <span className="text-xs text-ink-faint">Most recent first</span>
       </div>
       <ErrorNote error={error} />
       {sessions === null ? (
         <div className="space-y-2 px-5 pb-5">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-3.5 w-full" />)}</div>
       ) : sessions.length === 0 ? (
-        <p className="px-5 pb-5 text-sm text-ink-muted">No SSH sessions have been opened to this device.</p>
+        <EmptyState icon="terminal" title="No sessions yet" description="No one has opened an SSH session to this device." className="py-10" />
       ) : (
         <Table>
           <THead>

@@ -17,9 +17,22 @@ export type IconName =
   | "check-circle" | "x-circle" | "ban" | "building" | "credit-card" | "zap"
   | "sliders" | "file-text" | "activity" | "eye" | "pencil" | "arrow-left"
   | "inbox" | "link" | "server" | "laptop" | "arrow-up" | "arrow-down"
-  | "grid" | "layers" | "bar-chart" | "sun" | "fingerprint" | "maximize" | "minimize";
+  | "grid" | "layers" | "bar-chart" | "sun" | "fingerprint" | "maximize" | "minimize"
+  | "home" | "moon" | "command" | "panel-left" | "arrow-right" | "map-pin" | "cpu"
+  | "sparkles" | "package" | "circle-dot" | "trending-up";
 
 const PATHS: Record<IconName, React.ReactNode> = {
+  home: <><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /><path d="M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>,
+  moon: <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />,
+  command: <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />,
+  "panel-left": <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></>,
+  "arrow-right": <><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></>,
+  "map-pin": <><path d="M20 10c0 4.99-5.54 10.19-7.4 11.8a1 1 0 0 1-1.2 0C9.54 20.19 4 14.99 4 10a8 8 0 0 1 16 0" /><circle cx="12" cy="10" r="3" /></>,
+  cpu: <><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" rx="1" /><path d="M15 2v2" /><path d="M15 20v2" /><path d="M2 15h2" /><path d="M2 9h2" /><path d="M20 15h2" /><path d="M20 9h2" /><path d="M9 2v2" /><path d="M9 20v2" /></>,
+  sparkles: <><path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.13-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.13a.5.5 0 0 1 .96 0L14.06 8.5A2 2 0 0 0 15.5 9.94l6.13 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44l-1.58 6.13a.5.5 0 0 1-.96 0z" /><path d="M20 3v4" /><path d="M22 5h-4" /></>,
+  package: <><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" /><path d="M12 22V12" /><path d="m3.3 7 8.7 5 8.7-5" /></>,
+  "circle-dot": <><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="1" /></>,
+  "trending-up": <><path d="M22 7 13.5 15.5 8.5 10.5 2 17" /><path d="M16 7h6v6" /></>,
   search: <><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></>,
   bell: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></>,
   help: <><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></>,
