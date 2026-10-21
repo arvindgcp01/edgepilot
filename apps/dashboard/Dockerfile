@@ -18,6 +18,9 @@ COPY packages/shared ../../packages/shared
 # Same-origin: the API is proxied by whatever terminates TLS, so the client
 # needs no absolute base URL. See the comment in next.config.ts.
 ENV NEXT_PUBLIC_API_BASE_URL=""
+# Empty for the live dashboard; "/v2" (or similar) for a build served beside it.
+ARG EP_BASE_PATH=""
+ENV EP_BASE_PATH=${EP_BASE_PATH}
 RUN pnpm build
 
 FROM node:22-alpine AS runtime

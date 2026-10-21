@@ -8,6 +8,12 @@ const config: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
 
+  // Serve under a path prefix, e.g. "/v2" for a staging build running beside
+  // the live dashboard on the same origin. Build-time only; empty in the
+  // default build. API calls are unaffected: they go to /api at the origin
+  // root, which the TLS terminator routes to the server.
+  basePath: process.env.EP_BASE_PATH || undefined,
+
   /**
    * Proxy the API through this origin.
    *
