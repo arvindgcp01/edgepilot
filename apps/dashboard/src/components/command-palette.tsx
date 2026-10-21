@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { can, signOut } from "@/lib/api/client";
 import { listDevices, type Device } from "@/lib/api/devices";
 import { setTheme } from "@/lib/theme";
+import { usePinned, useRecent } from "@/lib/local-store";
 import { Icon, Kbd, StatusBadge, type IconName } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
@@ -17,7 +18,7 @@ export function openPalette() {
 
 type Entry = {
   id: string;
-  group: "Devices" | "Go to" | "Actions";
+  group: "Pinned" | "Recent" | "Devices" | "Go to" | "Actions";
   label: string;
   hint?: string;
   icon: IconName;
@@ -43,6 +44,8 @@ export function CommandPalette() {
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  const { pinned } = usePinned();
+  const recent = useRecent();
 
   const close = useCallback(() => {
     setOpen(false);
@@ -99,6 +102,7 @@ export function CommandPalette() {
     const pages: Entry[] = [
       { id: "p-overview", group: "Go to", label: "Overview", icon: "home", run: go("/") },
       ...(can("device:read") ? [{ id: "p-devices", group: "Go to" as const, label: "Devices", icon: "monitor" as IconName, run: go("/devices") }] : []),
+      ...(can("ssh:read") ? [{ id: "p-sessions", group: "Go to" as const, label: "Sessions", icon: "terminal" as IconName, run: go("/sessions") }] : []),
       ...(can("enrollment_token:read") ? [{ id: "p-enroll", group: "Go to" as const, label: "Enrollment", icon: "key" as IconName, run: go("/enrollment") }] : []),
       ...(can("device:read") ? [
         { id: "p-policies", group: "Go to" as const, label: "Policies", icon: "shield" as IconName, run: go("/policies") },
@@ -109,6 +113,7 @@ export function CommandPalette() {
     ];
     const actions: Entry[] = [
       ...(can("enrollment_token:write") ? [{ id: "a-enroll", group: "Actions" as const, label: "Enroll a new device", icon: "plus" as IconName, run: go("/enrollment?new=1") }] : []),
+      { id: "a-keys", group: "Actions", label: "Show keyboard shortcuts", hint: "?", icon: "keyboard", run: () => window.dispatchEvent(new Event("edgepilot:shortcuts")) },
       { id: "a-light", group: "Actions", label: "Switch to light theme", icon: "sun", run: () => setTheme("light") },
       { id: "a-dark", group: "Actions", label: "Switch to dark theme", icon: "moon", run: () => setTheme("dark") },
       { id: "a-system", group: "Actions", label: "Use system theme", icon: "monitor", run: () => setTheme("system") },
@@ -125,8 +130,19 @@ export function CommandPalette() {
       device: d,
       run: go(`/devices/${d.id}`),
     }));
-    return [...deviceEntries, ...pages.filter(match), ...actions.filter(match)];
-  }, [devices, query, router]);
+    // Before the operator types, the most useful devices are the ones they
+    // chose to keep close and the ones they just looked at.
+    const shortcuts: Entry[] = q
+      ? []
+      : [
+          ...pinned.map((d): Entry => ({ id: `pin-${d.id}`, group: "Pinned", label: d.name, hint: d.client, icon: "bookmark", run: go(`/devices/${d.id}`) })),
+          ...recent
+            .filter((d) => !pinned.some((p) => p.id === d.id))
+            .slice(0, 5)
+            .map((d): Entry => ({ id: `rec-${d.id}`, group: "Recent", label: d.name, hint: d.client, icon: "clock", run: go(`/devices/${d.id}`) })),
+        ];
+    return [...shortcuts, ...(q || shortcuts.length === 0 ? deviceEntries : []), ...pages.filter(match), ...actions.filter(match)];
+  }, [devices, query, router, pinned, recent]);
 
   useEffect(() => setActive(0), [query]);
 
@@ -142,7 +158,7 @@ export function CommandPalette() {
     entry.run();
   }
 
-  const groups = (["Devices", "Go to", "Actions"] as const)
+  const groups = (["Pinned", "Recent", "Devices", "Go to", "Actions"] as const)
     .map((group) => ({ group, items: entries.filter((e) => e.group === group) }))
     .filter((g) => g.items.length > 0);
 
@@ -196,7 +212,7 @@ export function CommandPalette() {
           {groups.map(({ group, items }) => (
             <div key={group} className="mb-1 last:mb-0">
               <div className="px-2.5 pb-1 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-faint">
-                {group === "Devices" && !query.trim() ? "Recently seen" : group}
+                {group === "Devices" && !query.trim() ? "Recently active" : group === "Recent" ? "Recently viewed" : group}
               </div>
               {items.map((entry) => {
                 const index = entries.indexOf(entry);

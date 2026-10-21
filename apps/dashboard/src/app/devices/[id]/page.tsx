@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import {
-  Badge, Button, Card, Code, ConfirmDialog, EmptyState, ErrorNote, Facts, Field, Icon, Input, Section, Skeleton,
+  Badge, Button, Card, Code, ConfirmDialog, EmptyState, ErrorNote, Facts, Field, Icon, IconButton, Input, Section, Skeleton,
   StatusBadge, Table, Tabs, TBody, Td, Textarea, Th, THead, Tr, useToast, type IconName,
 } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -19,6 +19,8 @@ import { absoluteTime, bytes, relativeTime } from "@/lib/format";
 import { DeviceMonitoring } from "@/components/device-monitoring";
 import { DeviceScreen } from "@/components/device-screen";
 import { DeviceTerminal } from "@/components/terminal";
+import { DeviceFiles } from "@/components/device-files";
+import { rememberRecent, usePinned } from "@/lib/local-store";
 
 /**
  * The page is a shell around the content.
@@ -49,6 +51,8 @@ function DeviceView() {
   const [screenOpen, setScreenOpen] = useState(false);
   const [togglingScreen, setTogglingScreen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const { isPinned, toggle: togglePin } = usePinned();
   const [tab, setTab] = useState<DeviceTab>("overview");
 
   const load = useCallback(async () => {
@@ -63,6 +67,11 @@ function DeviceView() {
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Feeds "Recently viewed" in the command palette.
+  useEffect(() => {
+    if (device) rememberRecent({ id: device.id, name: device.hostname || device.serial_number, client: device.client_name || undefined });
+  }, [device]);
 
   async function act(fn: () => Promise<unknown>, done: string) {
     setBusy(true);
@@ -175,6 +184,20 @@ function DeviceView() {
                   Approve device
                 </Button>
               </>
+            )}
+            <IconButton
+              icon="bookmark"
+              variant="secondary"
+              label={isPinned(device.id) ? "Unpin from sidebar" : "Pin to sidebar"}
+              className={cn(isPinned(device.id) && "border-accent/40 bg-accent-subtle text-accent hover:bg-accent-subtle")}
+              onClick={() => {
+                const pinnedNow = isPinned(device.id);
+                togglePin({ id: device.id, name, client: device.client_name || undefined });
+                push({ title: pinnedNow ? `${name} unpinned` : `${name} pinned to the sidebar`, tone: "success" });
+              }}
+            />
+            {can("ssh:connect") && device.status === "online" && device.approved && (
+              <Button icon="folder" onClick={() => setFilesOpen(true)}>Files</Button>
             )}
             {screenButton}
             {canConnect && (
@@ -289,6 +312,8 @@ function DeviceView() {
           )}
         </div>
       )}
+
+      <DeviceFiles deviceId={device.id} hostname={name} open={filesOpen} onClose={() => setFilesOpen(false)} />
 
       <ConfirmDialog
         open={confirmDecommission}

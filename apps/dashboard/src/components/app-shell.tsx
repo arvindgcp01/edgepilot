@@ -5,9 +5,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { can, signOut } from "@/lib/api/client";
 import { listNotifications, type Notification } from "@/lib/api/admin";
-import { fleetSummary, type FleetSummary } from "@/lib/api/devices";
+import { fleetSummary, listSSHSessions, type FleetSummary } from "@/lib/api/devices";
 import { useSession } from "@/components/session-provider";
 import { CommandPalette, openPalette } from "@/components/command-palette";
+import { ShortcutsOverlay } from "@/components/shortcuts";
+import { usePinned } from "@/lib/local-store";
 import {
   Avatar, Badge, Button, Icon, IconButton, Kbd, Menu, Popover, Spinner, type IconName,
 } from "@/components/ui";
@@ -15,13 +17,14 @@ import { cn } from "@/lib/cn";
 import { relativeTime } from "@/lib/format";
 import { readTheme, setTheme, type ThemePreference } from "@/lib/theme";
 
-type NavItem = { href: string; label: string; icon: IconName; permission?: string; badge?: "pending" };
+type NavItem = { href: string; label: string; icon: IconName; permission?: string; badge?: "pending" | "live" };
 
 const NAV: { title?: string; items: NavItem[] }[] = [
   {
     items: [
       { href: "/", label: "Overview", icon: "home" },
       { href: "/devices", label: "Devices", icon: "monitor", permission: "device:read", badge: "pending" },
+      { href: "/sessions", label: "Sessions", icon: "terminal", permission: "ssh:read", badge: "live" },
       { href: "/enrollment", label: "Enrollment", icon: "key", permission: "enrollment_token:read" },
     ],
   },
@@ -77,6 +80,7 @@ export function AppShell({
   return (
     <div className="min-h-screen">
       <CommandPalette />
+      <ShortcutsOverlay />
 
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-surface-border bg-surface-raised lg:flex">
@@ -133,13 +137,20 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const { principal } = useSession();
   const [summary, setSummary] = useState<FleetSummary | null>(null);
+  const [liveSessions, setLiveSessions] = useState(0);
+  const { pinned, remove: unpin } = usePinned();
 
-  // The pending-approval count is the one number worth a badge in the nav: it
-  // is the only thing on the list that waits on a human.
+  // Two numbers earn a badge in the nav: devices waiting on an approval, and
+  // people connected to customer machines right now.
   useEffect(() => {
     if (!can("device:read")) return;
     let cancelled = false;
-    const load = () => fleetSummary().then((s) => !cancelled && setSummary(s)).catch(() => {});
+    const load = () => {
+      fleetSummary().then((s) => !cancelled && setSummary(s)).catch(() => {});
+      if (can("ssh:read")) {
+        listSSHSessions().then((p) => !cancelled && setLiveSessions(p.data.length)).catch(() => {});
+      }
+    };
     void load();
     const timer = setInterval(load, 60_000);
     return () => {
@@ -194,7 +205,8 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               <ul className="space-y-0.5">
                 {items.map((item) => {
                   const active = isActive(pathname, item.href);
-                  const count = item.badge === "pending" ? summary?.pending_approval : undefined;
+                  const count =
+                    item.badge === "pending" ? summary?.pending_approval : item.badge === "live" ? liveSessions : undefined;
                   return (
                     <li key={item.href}>
                       <Link
@@ -215,12 +227,21 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                         />
                         <span className="flex-1">{item.label}</span>
                         {count ? (
-                          <span
-                            className="rounded-full bg-pending/10 px-2 py-0.5 text-2xs font-semibold tabular text-pending"
-                            title={`${count} awaiting approval`}
-                          >
-                            {count}
-                          </span>
+                          item.badge === "live" ? (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full bg-online/10 px-2 py-0.5 text-2xs font-semibold tabular text-online"
+                              title={`${count} live session${count === 1 ? "" : "s"}`}
+                            >
+                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-online" /> {count}
+                            </span>
+                          ) : (
+                            <span
+                              className="rounded-full bg-pending/10 px-2 py-0.5 text-2xs font-semibold tabular text-pending"
+                              title={`${count} awaiting approval`}
+                            >
+                              {count}
+                            </span>
+                          )
                         ) : null}
                       </Link>
                     </li>
@@ -230,6 +251,44 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </div>
           );
         })}
+
+        {pinned.length > 0 && (
+          <div>
+            <div className="mb-1.5 px-3 text-2xs font-semibold uppercase tracking-wider text-ink-faint">Pinned</div>
+            <ul className="space-y-0.5">
+              {pinned.map((d) => {
+                const active = pathname === `/devices/${d.id}`;
+                return (
+                  <li key={d.id} className="group relative">
+                    <Link
+                      href={`/devices/${d.id}`}
+                      onClick={onNavigate}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex h-8 items-center gap-3 rounded-lg px-3 pr-8 text-sm transition-colors",
+                        active ? "bg-accent-subtle font-medium text-accent dark:text-accent-soft" : "text-ink-muted hover:bg-surface-hover hover:text-ink",
+                      )}
+                      title={d.client ? `${d.name} · ${d.client}` : d.name}
+                    >
+                      <span className="flex h-[17px] w-[17px] items-center justify-center">
+                        <span className="h-1.5 w-1.5 rounded-full bg-ink-faint" />
+                      </span>
+                      <span className="truncate normal-nums">{d.name}</span>
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => unpin(d.id)}
+                      aria-label={`Unpin ${d.name}`}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-ink-faint opacity-0 hover:bg-surface-hover hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      <Icon name="x" size={12} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
       </nav>
 
       {summary && summary.total > 0 && (
@@ -282,6 +341,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             { kind: "separator" },
             { label: "Documentation", icon: "book", onSelect: () => window.open("https://docs.edgepilot.dev", "_blank", "noopener") },
             { label: "Contact support", icon: "mail", onSelect: () => window.open("mailto:support@visionify.ai") },
+            { label: "Keyboard shortcuts", icon: "keyboard", onSelect: () => window.dispatchEvent(new Event("edgepilot:shortcuts")), hint: "?" },
             { kind: "separator" },
             { label: "Sign out", icon: "log-out", onSelect: () => void doSignOut() },
           ]}

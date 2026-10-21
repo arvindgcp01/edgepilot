@@ -99,6 +99,13 @@ body {
   @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-surface;
 }
 
+/* Dialogs and drawers take focus programmatically (tabindex="-1") so the
+   keyboard lands inside them; they are not a control, and ringing the whole
+   panel reads as an error state. Their contents still show focus normally. */
+[tabindex="-1"]:focus-visible {
+  @apply ring-0 ring-offset-0;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: rgb(var(--surface-border-strong)) transparent;

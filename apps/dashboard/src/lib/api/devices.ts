@@ -335,3 +335,30 @@ export async function uploadDeviceFile(deviceId: string, dir: string, file: File
   }
   return (await res.json()) as { path: string; bytes: number };
 }
+
+/**
+ * A web-terminal session's recording, as asciicast text. Bearer-authed, so it
+ * is fetched with the token rather than linked. A session opened with `ssh -J`
+ * has no recording — the bastion relays an encrypted stream it cannot read —
+ * and the server answers 404 for it.
+ */
+export async function fetchRecording(sessionId: string): Promise<string> {
+  const base = API_BASE || window.location.origin;
+  const token = currentAccessToken();
+  const res = await fetch(`${base}/api/v1/ssh/sessions/${sessionId}/recording`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: "include",
+  });
+  if (res.status === 404) throw new Error("No recording exists for this session. Only browser-terminal sessions are recorded.");
+  if (!res.ok) {
+    let detail = `Could not load the recording (${res.status})`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      // Non-JSON error body.
+    }
+    throw new Error(detail);
+  }
+  return res.text();
+}
