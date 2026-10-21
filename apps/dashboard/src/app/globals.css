@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  /* Numbers line up in tables without every cell opting in. */
+  font-feature-settings: "tnum" 1, "cv11" 1;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+}
+
+/* Focus is never removed, only restyled. An operator who navigates by keyboard
+   through a fleet table must be able to see where they are. */
+:focus-visible {
+  @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-surface;
+}
+
+/* Dense tables are the product. A scrollbar the width of a column header is a
+   scrollbar that competes with the data. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3746 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-surface-border-strong;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Native controls that are hard to restyle inherit the theme instead. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: #3b82f6;
+}
+
+select {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b98a9' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

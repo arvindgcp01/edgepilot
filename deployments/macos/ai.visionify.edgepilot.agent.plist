@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    EdgePilot agent LaunchDaemon.
+
+    Installed at /Library/LaunchDaemons/ai.visionify.edgepilot.agent.plist,
+    owned root:wheel, mode 0644 — launchd refuses to load a daemon whose plist is
+    writable by anyone else, which is the point: this file names a binary that
+    runs as root.
+
+    See deployments/macos/README.md for the install steps and for what each of
+    these keys is doing.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.visionify.edgepilot.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/libexec/edgepilot-agent</string>
+    </array>
+
+    <!-- Start at boot, before anyone logs in: these Macs run headless. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+        Restart whenever the process exits, for any reason.
+
+        Paired with ThrottleInterval below. A crash loop is throttled rather
+        than allowed to spin, and the agent's own exit codes tell an operator
+        whether restarting can help: 78 means the configuration is wrong, 77
+        means the server has revoked or decommissioned this device.
+    -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!--
+        60 seconds between restarts. launchd's default is 10, which for an agent
+        that fails at startup means six process launches a minute writing six
+        identical errors to the log.
+    -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Replaced by the installer with the customer's server. -->
+        <key>EP_SERVER_URL</key>
+        <string>https://edgepilot.example.com</string>
+
+        <key>EP_ENROLL_TOKEN_FILE</key>
+        <string>/etc/edgepilot/enroll</string>
+
+        <key>EP_STATE_DIR</key>
+        <string>/var/db/edgepilot</string>
+
+        <key>EP_LOG_FILE</key>
+        <string>/var/log/edgepilot/agent.log</string>
+
+        <key>EP_LOG_LEVEL</key>
+        <string>info</string>
+    </dict>
+
+    <!--
+        launchd's own capture of stdout and stderr, which only receives what the
+        agent writes before its logger is up: a configuration error, or a failure
+        to open the log file. Everything after that goes to EP_LOG_FILE.
+    -->
+    <key>StandardOutPath</key>
+    <string>/var/log/edgepilot/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/edgepilot/launchd.err.log</string>
+
+    <!--
+        This directory must exist before the daemon is loaded. launchd will not
+        spawn a process whose WorkingDirectory is missing, and it fails before
+        the agent runs — so there is nothing in the agent's log to explain it,
+        because the agent is what writes that log. The installer creates it.
+    -->
+    <key>WorkingDirectory</key>
+    <string>/var/db/edgepilot</string>
+
+    <!--
+        Background priority. The agent shares these Macs with the customer's
+        actual workload, and it must never be the reason a render or a build
+        slows down.
+    -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>LowPriorityIO</key>
+    <true/>
+
+    <!--
+        Sixty seconds to shut down. The agent finishes its current work, flushes
+        the spool to disk, and half-closes its stream so the server marks it
+        offline deliberately rather than by timeout.
+    -->
+    <key>ExitTimeOut</key>
+    <integer>60</integer>
+</dict>
+</plist>

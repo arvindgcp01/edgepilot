@@ -1,0 +1,19 @@
+{
+  "SPHardwareDataType" : [
+    {
+      "_name" : "hardware_overview",
+      "SMC_version_system" : "2.44f5",
+      "boot_rom_version" : "487.0.0.0.0",
+      "cpu_type" : "Intel Core i7",
+      "current_processor_speed" : "3.2 GHz",
+      "l3_cache" : "12 MB",
+      "machine_model" : "Macmini8,1",
+      "machine_name" : "Mac mini",
+      "number_processors" : 6,
+      "packages" : 1,
+      "physical_memory" : "16 GB",
+      "platform_UUID" : "1A2B3C4D-5E6F-5A7B-9C8D-1E2F3A4B5C6D",
+      "serial_number" : "C07YR2ZWJYVX"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+ALTER TABLE IF EXISTS commands DROP CONSTRAINT IF EXISTS commands_deployment_fk;
+DROP TABLE IF EXISTS agent_versions CASCADE;
+DROP TABLE IF EXISTS deployment_status CASCADE;
+DROP TABLE IF EXISTS deployments CASCADE;
+DROP TABLE IF EXISTS package_versions CASCADE;
+DROP TABLE IF EXISTS software_packages CASCADE;

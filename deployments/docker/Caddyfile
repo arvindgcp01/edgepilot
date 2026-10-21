@@ -1,0 +1,85 @@
+# One origin for the dashboard and the API.
+#
+# This is not a convenience. The refresh token is an `HttpOnly; Secure;
+# SameSite=Strict` cookie — the three attributes that stop an XSS stealing a
+# long-lived credential. A browser will not send a SameSite=Strict cookie
+# cross-site, and will not store a Secure cookie over plain HTTP. Serving the
+# dashboard from a different origin than the API therefore breaks the session on
+# the first page reload, and the fix is this file, not a weaker cookie.
+#
+# :9443 is absent on purpose. The device plane is mutual TLS and must reach the
+# application with the client certificate intact; a proxy that terminates it
+# discards the device's entire identity. It is published straight from the
+# container.
+
+{
+	# A client connecting to an IP address sends no SNI, so Caddy has no name to
+	# match a site against and aborts the handshake. Naming the default here is
+	# what makes HTTPS-on-an-IP work at all — and HTTPS is not optional, because
+	# the refresh cookie is Secure.
+	#
+	# For a real hostname this is simply that hostname, which is also correct.
+	default_sni {$EP_DEFAULT_SNI}
+}
+
+{$EP_SITE_ADDRESS} {
+	# Empty for a real hostname — Caddy obtains a certificate automatically.
+	# `tls internal` for an IP address or a host public ACME cannot reach, which
+	# issues from Caddy's own CA: the browser warns once, and crucially the
+	# origin is https, so the Secure refresh cookie is stored. Plain HTTP is not
+	# an option here — the browser silently discards the cookie and the session
+	# dies on the first reload.
+	{$EP_TLS_DIRECTIVE}
+
+	encode zstd gzip
+
+	# The API, including the WebSocket upgrade — Caddy proxies it transparently.
+	handle /api/* {
+		reverse_proxy server:8080
+	}
+
+	# The health endpoints sit outside /api/v1 on purpose: they are for an
+	# orchestrator, not for API clients, and versioning them would be odd. They
+	# still have to be routed, or they fall through to the dashboard and answer
+	# a load balancer's probe with a 404 page.
+	handle /healthz {
+		reverse_proxy server:8080
+	}
+	handle /readyz {
+		reverse_proxy server:8080
+	}
+
+	# The one-line agent installer and the bundle it downloads.
+	#
+	# Unauthenticated by necessity: a Mac that has not enrolled yet holds no
+	# credential to present. What admits a device to the fleet is the enrollment
+	# token, not possession of the binary — so this publishes an unsigned Mach-O
+	# and nothing more sensitive than that.
+	#
+	# Served from the same origin the agent will enrol into, which is the point:
+	# the URL an operator pastes is the deployment the agent ends up talking to,
+	# with no second hostname to get wrong.
+	handle /install.sh {
+		root * /srv/agent
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle /dl/* {
+		root * /srv/agent
+		uri strip_prefix /dl
+		# No browse: the directory listing is not part of the contract, and an
+		# index of build output invites fetching things that are not published.
+		file_server
+	}
+
+	handle {
+		reverse_proxy dashboard:3000
+	}
+
+	header {
+		# HSTS only once a real certificate is in place; asserting it with a
+		# self-signed certificate locks a browser out of the site.
+		-Server
+	}
+}

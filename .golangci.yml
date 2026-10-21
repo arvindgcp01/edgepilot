@@ -1,0 +1,70 @@
+# golangci-lint configuration for every Go module in the repository.
+#
+# It lives at the repository root because golangci-lint searches parent
+# directories: one file governs apps/server, apps/agent, and packages/proto,
+# so the three cannot quietly drift apart.
+#
+# The linter set is chosen to catch the failure modes that actually matter in
+# this codebase: unchecked errors, ignored contexts, and resource leaks on the
+# long-lived connections the device plane depends on. Style-only linters are
+# left off — gofumpt already settles formatting, and a linter that argues about
+# taste gets disabled wholesale the first time it is wrong.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard   # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose       # an unclosed response body leaks a connection
+    - contextcheck    # a dropped context is a request that ignores cancellation
+    - noctx           # HTTP calls without a context cannot be cancelled
+    - rowserrcheck    # sql.Rows.Err is the error a range loop silently discards
+    - sqlclosecheck   # an unclosed Rows holds a pooled connection open
+    - errorlint       # %v on an error breaks errors.Is through the taxonomy
+    - nilerr          # returning nil after a non-nil error swallows failures
+    - copyloopvar
+    - durationcheck
+    - makezero
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # check-blank stays off. An explicit `_ = f()` is the documented way to
+      # say "this error was considered and is not actionable" (see
+      # docs/Contributing.md); flagging it would push people toward silently
+      # dropping the call instead, which is the failure this linter exists to
+      # catch. Genuinely unchecked calls are still reported.
+      check-blank: false
+      exclude-functions:
+        # Writing a diagnostic to stderr can fail on a closed pipe, and there is
+        # nothing useful to do about it — you cannot report a failure to report.
+        # Every other write path is still checked.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # readable field grouping beats saving a few bytes here
+        # `if err := f(); err != nil` inside a function that already has an err
+        # is idiomatic Go, and shadow flags every instance of it. The noise
+        # would train people to ignore govet.
+        - shadow
+
+  exclusions:
+    rules:
+      # Tests deliberately ignore errors from helpers whose failure the
+      # assertion itself would catch.
+      - path: _test\.go
+        linters: [errcheck, noctx, bodyclose]
+
+formatters:
+  enable:
+    - gofumpt

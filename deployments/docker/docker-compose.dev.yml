@@ -1,0 +1,82 @@
+# EdgePilot development stack.
+#
+# Backing services only — the server and dashboard run on the host so the
+# edit/rebuild loop stays fast. `make dev` brings this up.
+#
+# Azurite stands in for Azure Blob so the object-storage path is genuinely
+# exercised locally rather than stubbed out; a code path that only ever runs
+# against a filesystem driver is a code path nobody has tested.
+
+name: edgepilot-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: edgepilot
+      POSTGRES_PASSWORD: edgepilot
+      POSTGRES_DB: edgepilot
+      # Cheap, deterministic collation. Production uses the server default.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    command:
+      - postgres
+      # Development tuning: log anything slow enough to notice, so a missing
+      # index shows up while writing the query rather than in production.
+      - -c
+      - log_min_duration_statement=200
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edgepilot -d edgepilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No persistence: everything in Redis is derivable from Postgres or
+    # expendable (presence, caches, rate limits, pub/sub). Persisting it in
+    # development would only hide bugs that appear when it is empty.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    restart: unless-stopped
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--location", "/data"]
+    ports:
+      - "10000:10000"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 10000 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI
+    logging:
+      driver: none    # MailHog is extremely chatty and says nothing useful
+
+volumes:
+  postgres-data:
+  azurite-data:

@@ -1,0 +1,27 @@
+# Never send these to a build daemon.
+#
+# A build context is copied wholesale to the Docker daemon and every layer that
+# touches it. The CA's intermediate key living in deployments/docker/secrets
+# must not travel that path — and on a host where that directory is root-owned
+# and 0700, the build fails outright rather than quietly succeeding, which is
+# how this rule got written.
+deployments/docker/secrets/
+**/secrets/
+*.key
+*.pem
+.env
+**/.env
+.env.local
+**/.env.local
+
+# Build output and caches: large, and rebuilt inside the image anyway.
+bin/
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+.git/
+*.log
+
+# Local state from running the stack by hand.
+data/

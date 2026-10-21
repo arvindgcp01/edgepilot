@@ -1,0 +1,212 @@
+# EdgePilot, single node.
+#
+# Postgres, Redis, and the server on one host. Suitable up to a few hundred
+# devices — beyond that, move Postgres and Redis to managed services (see
+# docs/Deployment.md §6) so that a host failure stops being a data-loss event.
+#
+# What this file deliberately does NOT do:
+#
+#   - Terminate TLS for the API. Put Caddy or a load balancer in front of :8080.
+#     The device plane on :9443 terminates its own TLS and must be passed through
+#     at L4, never re-terminated: it is mutual TLS, and a proxy that terminates it
+#     discards the client certificate that is the device's entire identity.
+#
+#   - Manage secrets. Every value comes from .env, which is 0600 and never
+#     committed. See .env.example.
+
+name: edgepilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edgepilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-edgepilot}
+      # Checksums catch silent corruption on a single-node deployment that has
+      # no replica to compare against.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Not published. Nothing outside this compose network has any business
+    # reaching the database, and binding it to the host is how a VM with one
+    # open port ends up with an exposed Postgres.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edgepilot} -d ${POSTGRES_DB:-edgepilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly: presence is reconstructible, but the leases and the revocation
+    # cache are cheaper to reload than to reason about after an unclean stop.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        VERSION: ${EP_VERSION:-dev}
+        COMMIT: ${EP_COMMIT:-none}
+    image: edgepilot-server:${EP_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      # The device plane, published straight from the container. Agents dial it
+      # from the internet and it authenticates them with mutual TLS rather than
+      # relying on the network — and it must NOT go through the proxy, which
+      # would terminate the TLS that carries the device's identity.
+      - "9443:9443"
+      # The API is reached through Caddy on the same origin as the dashboard.
+      # Set EP_HTTP_BIND to expose it directly for debugging.
+      - "${EP_HTTP_BIND:-127.0.0.1}:8080:8080"
+      # The SSH bastion. Plain TCP, published straight from the container for
+      # the same reason as the device plane: it is its own protocol with its own
+      # host key, and there is nothing for an HTTP proxy to do with it.
+      - "2222:2222"
+    environment:
+      # production or staging. The difference is not cosmetic: production
+      # *requires* sslmode=verify-full to PostgreSQL, rediss:// to Redis, object
+      # storage rather than the filesystem, an SSH host key, and pinned signing
+      # keys. A single-node stack whose database and cache sit on a private
+      # Docker network satisfies none of those, and labelling it production
+      # would be a claim the deployment cannot back up. Set this to production
+      # once §6 of docs/Deployment.md is in place.
+      EP_ENV: ${EP_ENV:-production}
+      EP_REPLICA_ID: ${EP_REPLICA_ID:-node-1}
+      EP_PUBLIC_HOST: ${EP_PUBLIC_HOST:?EP_PUBLIC_HOST is required}
+
+      EP_DATABASE_URL: postgres://${POSTGRES_USER:-edgepilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-edgepilot}?sslmode=disable
+      EP_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+
+      EP_HTTP_ADDR: ":8080"
+      EP_GRPC_ADDR: ":9443"
+      EP_HTTP_ALLOWED_ORIGINS: ${EP_HTTP_ALLOWED_ORIGINS:-}
+
+      EP_JWT_PRIVATE_KEY: ${EP_JWT_PRIVATE_KEY:?EP_JWT_PRIVATE_KEY is required}
+      EP_DATA_KEY: ${EP_DATA_KEY:?EP_DATA_KEY is required}
+
+      EP_SSH_ADDR: ":2222"
+      # The bastion's identity. Operators pin this fingerprint, so it must
+      # survive restarts — hence a file in the CA directory rather than
+      # something generated at boot. Absent means no bastion.
+      EP_SSH_HOST_KEY_FILE: /secrets/ca/ssh_host_ed25519_key
+      EP_SSH_PUBLIC_HOST: ${EP_PUBLIC_HOST}
+      # The browser terminal. This key logs the SERVER into devices, so unlike
+      # the host key above it is a credential that opens a shell on every Mac
+      # that has installed its public half. Absent means no browser terminal;
+      # `ssh -J` is unaffected either way. See docs/Security.md §5.1.
+      EP_SSH_CLIENT_KEY_FILE: /secrets/ca/ssh_terminal_ed25519_key
+      # Where browser-terminal sessions are recorded. Empty disables recording,
+      # which is not recommended: recording is the compensating control for the
+      # server being able to read these sessions at all.
+      EP_SESSION_RECORDING_DIR: /var/lib/edgepilot/recordings
+
+      EP_CA_CERT: /secrets/ca/chain.crt
+      EP_CA_KEY: /secrets/ca/intermediate.key
+      EP_GRPC_CERT_FILE: /secrets/ca/server.crt
+      EP_GRPC_KEY_FILE: /secrets/ca/server.key
+
+      EP_DEVICE_PLANE_ENDPOINT: ${EP_DEVICE_PLANE_ENDPOINT:?EP_DEVICE_PLANE_ENDPOINT is required}
+      EP_SIGNING_PUBLIC_KEYS: ${EP_SIGNING_PUBLIC_KEYS:-}
+
+      EP_LOG_LEVEL: ${EP_LOG_LEVEL:-info}
+      EP_LOG_FORMAT: json
+    volumes:
+      # Read-only: the server reads its CA material and never writes it. The
+      # intermediate key is here; the ROOT key must not be.
+      - ./secrets/ca:/secrets/ca:ro
+      # Session recordings. A named volume rather than a bind mount so they
+      # survive a container rebuild — a recording that vanishes with the image
+      # is not an audit trail.
+      #
+      # Docker creates a named volume owned by root, and this image runs as
+      # 65532, so the first write fails with EACCES unless the volume is chowned
+      # once on the host:
+      #
+      #   docker compose up -d server   # creates the volume
+      #   sudo chown -R 65532:65532 \
+      #     /var/lib/docker/volumes/edgepilot_session-recordings/_data
+      #
+      # The server logs an error and keeps serving if it cannot write, because a
+      # session that dies for want of a recording is worse than one with none —
+      # but that error means the compensating control for §5.1 is not in effect,
+      # and it should be fixed rather than lived with.
+      - session-recordings:/var/lib/edgepilot/recordings
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/epctl", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: apps/dashboard/Dockerfile
+    image: edgepilot-dashboard:${EP_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      - server
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # A bare host:port serves plain HTTP; a hostname makes Caddy obtain a
+      # certificate automatically. The refresh cookie is Secure, so anything but
+      # localhost needs the hostname form for sessions to survive a reload.
+      EP_SITE_ADDRESS: ${EP_SITE_ADDRESS:?EP_SITE_ADDRESS is required}
+      # "tls internal" when serving on an IP or a host public ACME cannot
+      # reach; empty for a real hostname.
+      EP_TLS_DIRECTIVE: ${EP_TLS_DIRECTIVE:-}
+      # The hostname or IP clients connect to, for SNI-less connections.
+      EP_DEFAULT_SNI: ${EP_DEFAULT_SNI:?EP_DEFAULT_SNI is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # What /install.sh and /dl/* serve. Produced by `make package-agent` and
+      # copied here; read-only, because nothing in the request path has any
+      # business writing to it.
+      #
+      # An absent or empty directory is not an error — Caddy answers 404 and the
+      # rest of the site is unaffected. It does mean the one-line installer is
+      # simply not published yet.
+      - ./agent-dist:/srv/agent:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  session-recordings:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

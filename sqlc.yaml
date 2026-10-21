@@ -1,0 +1,17 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # sqlc reads the same migration files the server ships, so the generated Go
+    # is derived from the real schema rather than a hand-maintained copy of it.
+    # It understands golang-migrate naming and ignores the .down.sql files.
+    schema: apps/server/migrations
+    queries: apps/server/internal/repository/postgres/queries
+    gen:
+      go:
+        package: sqlcgen
+        out: apps/server/internal/repository/postgres/sqlcgen
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        emit_result_struct_pointers: false
+        emit_json_tags: false

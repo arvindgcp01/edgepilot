@@ -1,0 +1,24 @@
+# Redocly configuration for the EdgePilot API specification.
+#
+# CI runs `redocly lint --config redocly.yaml packages/shared/openapi/openapi.yaml`
+# and fails the build on any finding. The two rules relaxed below are relaxed
+# deliberately, with the reason recorded here rather than in an ignore file.
+extends:
+  - recommended
+apis:
+  edgepilot@v1:
+    root: openapi.yaml
+rules:
+  # The localhost entry is the documented docker-compose development target. It
+  # is a real server for the audience that reads this spec, not placeholder text.
+  no-server-example.com: off
+  # `examples` on a schema is the 3.1 spelling; the singular `example` keyword
+  # was removed in 3.1 and Redocly's heuristic still suggests it in places.
+  no-invalid-media-type-examples:
+    severity: error
+    allowAdditionalProperties: false
+  operation-4xx-response: error
+  operation-2xx-response: error
+  security-defined: error
+  no-unresolved-refs: error
+  struct: error
