@@ -208,6 +208,7 @@ func (in EnrollDeviceInput) Validate() error {
 // PATCH from claiming a hostname the Mac does not have.
 type ReportedFacts struct {
 	Hostname     string
+	OSName       string
 	OSVersion    string
 	OSBuild      string
 	AgentVersion string
@@ -226,6 +227,8 @@ type ReportedFacts struct {
 func (f ReportedFacts) DiffersFrom(d *Device) bool {
 	switch {
 	case f.Hostname != "" && f.Hostname != d.Hostname:
+		return true
+	case f.OSName != "" && f.OSName != d.OSName:
 		return true
 	case f.OSVersion != "" && f.OSVersion != d.OSVersion:
 		return true

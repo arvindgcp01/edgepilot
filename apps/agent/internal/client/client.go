@@ -469,6 +469,7 @@ func (c *Client) handshake(ctx context.Context, stream v1.AgentService_ConnectCl
 				slog.Any("error", err))
 		} else {
 			hello.Hostname = facts.Hostname
+			hello.OsName = facts.OSName
 			hello.OsVersion = facts.OSVersion
 			hello.OsBuild = facts.OSBuild
 			hello.LocalIp = facts.LocalIP

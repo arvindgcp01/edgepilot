@@ -139,6 +139,9 @@ message Hello {
   // Durable messages buffered on disk while disconnected, so the server can size
   // its ingest window.
   uint32 spooled_messages = 10;
+  // "macOS", "Ubuntu", "Debian GNU/Linux", … Added with Linux support; empty
+  // from older agents, which are all Macs, and the server keeps what it has.
+  string os_name       = 11;
 }
 
 message Welcome {

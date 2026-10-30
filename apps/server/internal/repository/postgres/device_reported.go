@@ -41,11 +41,12 @@ func (r *deviceRepo) RefreshReported(ctx context.Context, id uuid.UUID, in domai
 			UPDATE devices
 			   SET hostname      = COALESCE(NULLIF($2, ''), hostname),
 			       os_version    = COALESCE(NULLIF($3, ''), os_version),
+			       os_name       = COALESCE(NULLIF($7, ''), os_name),
 			       os_build      = COALESCE(NULLIF($4, ''), os_build),
 			       agent_version = COALESCE(NULLIF($5, ''), agent_version),
 			       local_ip      = COALESCE(NULLIF($6, '')::inet, local_ip)
 			 WHERE id = $1 AND deleted_at IS NULL`,
-			id, in.Hostname, in.OSVersion, in.OSBuild, in.AgentVersion, in.LocalIP)
+			id, in.Hostname, in.OSVersion, in.OSBuild, in.AgentVersion, in.LocalIP, in.OSName)
 		return translate(err, "device")
 	})
 }

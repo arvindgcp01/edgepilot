@@ -181,7 +181,8 @@ Optional:
 
   EP_DEVICE_PLANE_ENDPOINT  override the endpoint enrollment returned
   EP_SERVER_CA_FILE         pin the CA that signed the server's TLS certificate
-  EP_STATE_DIR              where the identity lives (default /var/db/edgepilot)
+  EP_STATE_DIR              where the identity lives (default /var/db/edgepilot on macOS,
+                            /var/lib/edgepilot on Linux)
   EP_SPOOL_DIR              the offline buffer (default <state dir>/spool)
   EP_SPOOL_MAX_BYTES        the buffer's ceiling (default 64 MiB)
   EP_LOG_FILE               where to log (default /var/log/edgepilot/agent.log)

@@ -1,4 +1,4 @@
-//go:build !darwin || simulator
+//go:build (!darwin && !linux) || simulator
 
 package collect
 

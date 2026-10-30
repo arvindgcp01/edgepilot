@@ -1167,8 +1167,11 @@ type Hello struct {
 	// Durable messages buffered on disk while disconnected, so the server can size
 	// its ingest window.
 	SpooledMessages uint32 `protobuf:"varint,10,opt,name=spooled_messages,json=spooledMessages,proto3" json:"spooled_messages,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// "macOS", "Ubuntu", "Debian GNU/Linux", … Added with Linux support; empty
+	// from older agents, which are all Macs, and the server keeps what it has.
+	OsName        string `protobuf:"bytes,11,opt,name=os_name,json=osName,proto3" json:"os_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Hello) Reset() {
@@ -1269,6 +1272,13 @@ func (x *Hello) GetSpooledMessages() uint32 {
 		return x.SpooledMessages
 	}
 	return 0
+}
+
+func (x *Hello) GetOsName() string {
+	if x != nil {
+		return x.OsName
+	}
+	return ""
 }
 
 type Welcome struct {
@@ -3831,7 +3841,7 @@ const file_edgepilot_v1_agent_proto_rawDesc = "" +
 	"\x15REASON_DEVICE_REVOKED\x10\x03\x12\x19\n" +
 	"\x15REASON_DEVICE_DELETED\x10\x04\x12\x19\n" +
 	"\x15REASON_PROTOCOL_ERROR\x10\x05\x12\x1a\n" +
-	"\x16REASON_UNAUTHENTICATED\x10\x06\"\xe3\x03\n" +
+	"\x16REASON_UNAUTHENTICATED\x10\x06\"\xfc\x03\n" +
 	"\x05Hello\x12#\n" +
 	"\ragent_version\x18\x01 \x01(\tR\fagentVersion\x12\x17\n" +
 	"\aboot_id\x18\x02 \x01(\tR\x06bootId\x12\"\n" +
@@ -3844,7 +3854,8 @@ const file_edgepilot_v1_agent_proto_rawDesc = "" +
 	"\tbooted_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\bbootedAt\x12\\\n" +
 	"\x13inventory_checksums\x18\t \x03(\v2+.edgepilot.v1.Hello.InventoryChecksumsEntryR\x12inventoryChecksums\x12)\n" +
 	"\x10spooled_messages\x18\n" +
-	" \x01(\rR\x0fspooledMessages\x1aE\n" +
+	" \x01(\rR\x0fspooledMessages\x12\x17\n" +
+	"\aos_name\x18\v \x01(\tR\x06osName\x1aE\n" +
 	"\x17InventoryChecksumsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\x9f\x02\n" +

@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ import (
 	v1 "github.com/visionify/edgepilot/packages/proto/gen/edgepilot/v1"
 )
 
-// Defaults for a macOS install.
+// Defaults for an install, the same on macOS and Linux.
 const (
 	// DefaultUsername is the account a key targets when it does not name one.
 	// It must already exist on the device; nothing here creates it.
@@ -74,10 +75,18 @@ type Reconciler struct {
 	// lookupUser reports whether an account exists.
 	lookupUser func(name string) (*user.User, error)
 
+	// goos selects the platform's sshd handling. A field so tests can drive
+	// the Linux path from a Mac and the reverse.
+	goos string
+
 	// lastApplied is the digest of the key set most recently written, so an
 	// unchanged policy — which arrives on every reconnect — does not rewrite
-	// files or reload sshd.
+	// files or reload sshd. applied says whether there is one at all: the
+	// digest of an empty set is "", the same as the zero value, and without
+	// this flag an agent that restarts after the last key was revoked would
+	// skip the very reconcile that removes it from disk.
 	lastApplied string
+	applied     bool
 }
 
 // Options configures a Reconciler.
@@ -106,6 +115,7 @@ func New(opts Options) *Reconciler {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
 		lookupUser: user.Lookup,
+		goos:       runtime.GOOS,
 	}
 }
 
@@ -133,7 +143,7 @@ func (r *Reconciler) Apply(ctx context.Context, keys []*v1.AuthorizedKey) error 
 	}
 
 	digest := digestOf(byUser)
-	if digest == r.lastApplied {
+	if r.applied && digest == r.lastApplied {
 		return nil
 	}
 
@@ -158,6 +168,7 @@ func (r *Reconciler) Apply(ctx context.Context, keys []*v1.AuthorizedKey) error 
 	// Only after everything succeeded. A partial apply must be retried on the
 	// next policy, not skipped because the digest matched.
 	r.lastApplied = digest
+	r.applied = true
 	r.log.Info("reconciled the operator key set",
 		slog.Int("accounts", len(byUser)), slog.Int("keys", len(keys)))
 	return nil
@@ -272,6 +283,12 @@ func (r *Reconciler) requireUser(ctx context.Context, username string) error {
 func (r *Reconciler) allowRemoteLogin(ctx context.Context, username string) error {
 	const group = "com.apple.access_ssh"
 
+	// Linux has no equivalent switch: sshd admits any account with a valid key
+	// unless an administrator wrote AllowUsers/AllowGroups, which is their call.
+	if r.goos != "darwin" {
+		return nil
+	}
+
 	if _, err := r.run(ctx, "dseditgroup", "-o", "read", group); err != nil {
 		r.log.Debug("Remote Login is open to all users; no access group to join")
 		return nil
@@ -368,6 +385,13 @@ func includedDir(config []byte) (string, bool) {
 // restore is the previous contents of path, or nil when path is a new file this
 // package created — in which case rolling back means removing it.
 func (r *Reconciler) validateAndReload(ctx context.Context, path string, restore []byte) error {
+	// `sshd -t` on Linux refuses to run without its privilege-separation
+	// directory, which only exists while the service is up. A box whose sshd is
+	// socket-activated and idle (Ubuntu 22.10+) would otherwise fail validation
+	// of a perfectly good file.
+	if r.goos == "linux" {
+		_ = os.MkdirAll("/run/sshd", 0o755)
+	}
 
 	// A configuration sshd will not parse is worse than no change at all: the
 	// next restart takes Remote Login down entirely, and the machine is
@@ -391,13 +415,36 @@ func (r *Reconciler) validateAndReload(ctx context.Context, path string, restore
 
 	// Reload so it takes effect without waiting for a reboot. Existing sessions
 	// are unaffected.
-	if out, err := r.run(ctx, "launchctl", "kickstart", "-k", "system/com.openssh.sshd"); err != nil {
+	if out, err := r.reloadSSHD(ctx); err != nil {
 		// Not fatal: the keys are on disk and sshd picks them up when it next
 		// starts. Saying so is more useful than failing the whole reconcile.
 		r.log.Warn("could not reload sshd; the keys apply at its next restart",
 			slog.Any("error", err), slog.String("output", string(bytes.TrimSpace(out))))
 	}
 	return nil
+}
+
+// reloadSSHD makes the running sshd re-read its configuration.
+//
+// On Linux the unit is `ssh` on Debian and Ubuntu and `sshd` everywhere else.
+// Each is tried on its own, because systemctl fails a whole call that names a
+// unit which does not exist. try-reload-or-restart acts only on a running
+// unit, so a socket-activated sshd that is idle is left alone — the next
+// connection starts one that reads the new file anyway.
+func (r *Reconciler) reloadSSHD(ctx context.Context) ([]byte, error) {
+	if r.goos != "linux" {
+		return r.run(ctx, "launchctl", "kickstart", "-k", "system/com.openssh.sshd")
+	}
+	var lastOut []byte
+	var lastErr error
+	for _, unit := range []string{"ssh.service", "sshd.service"} {
+		out, err := r.run(ctx, "systemctl", "try-reload-or-restart", unit)
+		if err == nil {
+			return out, nil
+		}
+		lastOut, lastErr = out, err
+	}
+	return lastOut, lastErr
 }
 
 // writeFileAtomic replaces a file without ever leaving it half-written.
@@ -471,9 +518,10 @@ func digestOf(byUser map[string][]*v1.AuthorizedKey) string {
 // derives a short name from the full name at account creation and routinely
 // produces one containing one — "City Pallets Inc." becomes "citypalletsinc."
 // — so the POSIX useradd rule this used to apply rejected entirely ordinary
-// customer accounts. Every device in this fleet is a Mac. The Linux rule was
-// never the right one, and it failed silently: the key was dropped with a
-// warning in a log nobody reads, and the operator saw only a refused login.
+// customer accounts. The rule is a superset of the POSIX one, so Linux
+// accounts made by useradd/adduser pass it too. The narrower rule failed
+// silently: the key was dropped with a warning in a log nobody reads, and the
+// operator saw only a refused login.
 //
 // Requiring the first character to be [a-z_] is what keeps the dot safe. The
 // value becomes a path element under /etc/edgepilot/authorized_keys.d, and no

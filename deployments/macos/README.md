@@ -27,7 +27,7 @@ One line, on a Mac with nothing on it:
 curl -fsSL https://edgepilot.visionify.ai/install.sh | sudo bash -s -- <enrollment-token>
 ```
 
-`bootstrap.sh` is what is served at `/install.sh`. It downloads
+`deployments/bootstrap.sh` is what is served at `/install.sh` (the same script serves Linux; see deployments/linux/README.md). It downloads
 `/dl/edgepilot-agent.tgz` from the same origin, checks it against `/dl/SHA256SUMS`,
 and hands off to the `install.sh` inside the bundle — so the download path and
 the tarball path run identical install logic rather than two copies that drift.

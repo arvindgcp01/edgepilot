@@ -38,11 +38,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// DefaultDir is where the agent keeps its identity on macOS.
+// DefaultDir is where the agent keeps its identity: /var/db/edgepilot on
+// macOS, /var/lib/edgepilot elsewhere (defaults_*.go).
 //
-// /var/db rather than /etc: this is machine-generated state, not configuration
-// an operator edits, and /etc is what configuration management overwrites.
-const DefaultDir = "/var/db/edgepilot"
+// Not /etc: this is machine-generated state, not configuration an operator
+// edits, and /etc is what configuration management overwrites.
 
 const (
 	keyFile  = "device.key"

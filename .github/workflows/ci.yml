@@ -145,7 +145,7 @@ jobs:
       # The agent ships to customer hardware on both architectures. Building it
       # here means a darwin-only compile error is caught on every PR rather than
       # at release time.
-      - name: Agent (darwin/arm64 and darwin/amd64)
+      - name: Agent (darwin and linux, arm64 and amd64)
         run: |
           if [ -z "$(cd apps/agent && go list ./... 2>/dev/null)" ]; then
             echo "agent has no packages yet; skipping"
@@ -154,6 +154,8 @@ jobs:
           cd apps/agent
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath ./...
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath ./...
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath ./...
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath ./...
           # The simulator build is what makes the control-plane path testable on
           # Linux. It is a supported configuration, so a compile error in it has
           # to fail a PR rather than surface the next time someone runs it.

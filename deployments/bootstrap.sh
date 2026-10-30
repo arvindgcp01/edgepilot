@@ -4,9 +4,11 @@
 #
 #   curl -fsSL https://edgepilot.visionify.ai/install.sh | sudo bash -s -- <enrollment-token>
 #
-# This is a thin front for deployments/macos/install.sh: it fetches the agent
-# bundle from the same deployment the Mac is about to enrol into, then hands off
-# to the installer inside it. There is deliberately only one installer — a
+# The same command on a Mac and on Linux. This is a thin front for the
+# platform's installer (deployments/macos/install.sh or
+# deployments/linux/install.sh): it fetches that platform's agent bundle from
+# the same deployment the machine is about to enrol into, then hands off to the
+# installer inside it. There is deliberately only one installer — a
 # second copy of the install logic living in the download path is a copy that
 # drifts, and the drift only ever surfaces on a customer's machine.
 #
@@ -20,7 +22,14 @@ set -euo pipefail
 # an agent can never be installed from one deployment and pointed at another
 # without saying so explicitly.
 SERVER_URL="${EP_SERVER_URL:-https://edgepilot.visionify.ai}"
-BUNDLE_URL="${EP_BUNDLE_URL:-${SERVER_URL}/dl/edgepilot-agent.tgz}"
+
+case "$(uname -s)" in
+  Darwin) BUNDLE=edgepilot-agent.tgz;       STATE_DIR=/var/db/edgepilot ;;
+  Linux)  BUNDLE=edgepilot-agent-linux.tgz; STATE_DIR=/var/lib/edgepilot ;;
+  *) echo "EdgePilot runs on macOS and Linux, not $(uname -s)." >&2; exit 1 ;;
+esac
+
+BUNDLE_URL="${EP_BUNDLE_URL:-${SERVER_URL}/dl/${BUNDLE}}"
 SUMS_URL="${EP_SUMS_URL:-${SERVER_URL}/dl/SHA256SUMS}"
 
 # Argument first, environment second. The argument is the documented form; the
@@ -30,12 +39,12 @@ SUMS_URL="${EP_SUMS_URL:-${SERVER_URL}/dl/SHA256SUMS}"
 TOKEN="${1:-${EP_ENROLL_TOKEN:-}}"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "This must run as root: it installs a LaunchDaemon and writes to /var/db." >&2
+  echo "This must run as root: it installs a system service and writes to $STATE_DIR." >&2
   echo "  curl -fsSL ${SERVER_URL}/install.sh | sudo bash -s -- <enrollment-token>" >&2
   exit 1
 fi
-if [[ -z "$TOKEN" && ! -f /var/db/edgepilot/device.json ]]; then
-  echo "An enrollment token is required on a Mac that has not enrolled yet." >&2
+if [[ -z "$TOKEN" && ! -f "$STATE_DIR/device.json" ]]; then
+  echo "An enrollment token is required on a machine that has not enrolled yet." >&2
   echo "  curl -fsSL ${SERVER_URL}/install.sh | sudo bash -s -- <enrollment-token>" >&2
   echo "Mint one in the dashboard under Enrollment, or with 'epctl enrollment-token'." >&2
   exit 2
@@ -51,14 +60,19 @@ echo "==> Downloading the agent bundle from $SERVER_URL"
 # checksum below pointless as well, since both would come from the same
 # unauthenticated hop.
 curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 2 \
-  -o "$WORK/edgepilot-agent.tgz" "$BUNDLE_URL"
+  -o "$WORK/$BUNDLE" "$BUNDLE_URL"
 
 # Checksum when the deployment publishes one. Absent is not fatal: it means an
 # older server, and the download already came over verified TLS. A mismatch IS
 # fatal — that is a bundle rewritten in transit or a half-finished publish.
 if curl -fsSL --proto '=https' --tlsv1.2 -o "$WORK/SHA256SUMS" "$SUMS_URL" 2>/dev/null; then
-  expected="$(awk '$2 ~ /edgepilot-agent\.tgz$/ { print $1; exit }' "$WORK/SHA256SUMS")"
-  actual="$(shasum -a 256 "$WORK/edgepilot-agent.tgz" | awk '{ print $1 }')"
+  expected="$(awk -v f="$BUNDLE" '$2 == f || $2 == "*" f { print $1; exit }' "$WORK/SHA256SUMS")"
+  # sha256sum on Linux, shasum on a Mac; neither is guaranteed on the other.
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$WORK/$BUNDLE" | awk '{ print $1 }')"
+  else
+    actual="$(shasum -a 256 "$WORK/$BUNDLE" | awk '{ print $1 }')"
+  fi
   if [[ -z "$expected" ]]; then
     echo "==> SHA256SUMS does not list the bundle; skipping verification"
   elif [[ "$expected" != "$actual" ]]; then
@@ -73,7 +87,7 @@ else
   echo "==> No SHA256SUMS published; skipping verification"
 fi
 
-tar xzf "$WORK/edgepilot-agent.tgz" -C "$WORK"
+tar xzf "$WORK/$BUNDLE" -C "$WORK"
 
 # Locate the installer rather than assuming the directory name inside the
 # tarball, so repackaging under a versioned directory does not break this.

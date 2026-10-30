@@ -21,12 +21,12 @@ import (
 	"time"
 )
 
-// Defaults for a macOS install. Every path is under a root-owned directory,
+// Defaults for an install. Every path is under a root-owned directory,
 // because the agent runs as root and its state must not be writable by a local
-// user who could then impersonate the device.
+// user who could then impersonate the device. The state directory differs by
+// platform (defaults_*.go); the rest is the same everywhere.
 const (
-	DefaultStateDir  = "/var/db/edgepilot"
-	DefaultSpoolDir  = "/var/db/edgepilot/spool"
+	DefaultSpoolDir  = DefaultStateDir + "/spool"
 	DefaultTokenFile = "/etc/edgepilot/enroll"
 	DefaultLogFile   = "/var/log/edgepilot/agent.log"
 )

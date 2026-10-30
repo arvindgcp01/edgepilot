@@ -1,0 +1,79 @@
+# EdgePilot agent systemd unit.
+#
+# Installed at /etc/systemd/system/edgepilot-agent.service, owned root:root,
+# mode 0644. This file names a binary that runs as root, so nobody but root may
+# be able to write it.
+#
+# install.sh puts it there; deployments/linux/README.md lists everything else
+# it writes. It mirrors the macOS LaunchDaemon setting for setting.
+
+[Unit]
+Description=EdgePilot fleet agent
+Documentation=https://github.com/visionify/edgepilot/blob/main/deployments/linux/README.md
+# The agent dials out on its first breath; starting before the network is up
+# costs one failed attempt and a backoff, which is harmless but noisy.
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting. The default rate limit stops a unit after five
+# quick failures, and a device that was briefly misconfigured would then stay
+# down until someone visited the site.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/edgepilot-agent
+
+# Replaced by the installer with the customer's server.
+Environment=EP_SERVER_URL=https://edgepilot.example.com
+Environment=EP_ENROLL_TOKEN_FILE=/etc/edgepilot/enroll
+Environment=EP_STATE_DIR=/var/lib/edgepilot
+Environment=EP_LOG_FILE=/var/log/edgepilot/agent.log
+Environment=EP_LOG_LEVEL=info
+# Overrides belong here rather than in this file, so a package upgrade that
+# replaces the unit does not discard them.
+EnvironmentFile=-/etc/edgepilot/agent.env
+
+# systemd creates these, owned by root, before the agent starts. 0700 on the
+# state directory: the device's private key lives there.
+StateDirectory=edgepilot
+StateDirectoryMode=0700
+LogsDirectory=edgepilot
+LogsDirectoryMode=0755
+WorkingDirectory=/var/lib/edgepilot
+
+# Restart whenever the process exits, sixty seconds apart — the same policy as
+# launchd on a Mac. The exit code tells an operator whether restarting can help:
+# 78 means the configuration is wrong, 77 means the server has revoked or
+# decommissioned this device. A 77 device keeps exiting 77 a minute apart, which
+# is visible in `systemctl status`, costs nothing, and recovers by itself if an
+# administrator re-approves the device.
+Restart=always
+RestartSec=60
+
+# Sixty seconds to shut down: the agent finishes its current work, flushes the
+# spool to disk, and half-closes its stream so the server marks it offline
+# deliberately rather than by timeout.
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+# Background priority. The agent shares these machines with the customer's
+# actual workload, and it must never be the reason that workload slows down.
+Nice=10
+IOSchedulingClass=idle
+
+# Hardening that costs the agent nothing. It is deliberately not sandboxed
+# further (ProtectSystem, ProtectHome, NoNewPrivileges): the agent writes
+# /etc/edgepilot/authorized_keys.d and an sshd drop-in, reloads sshd, and
+# browses and transfers files for operators, and a sandbox that breaks those
+# would be removed rather than maintained.
+#
+# Not PrivateTmp either: the file browser must show the machine's real /tmp,
+# not an empty private one.
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

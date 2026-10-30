@@ -158,16 +158,3 @@ func (c *darwinMetrics) temperature(ctx context.Context) *float32 {
 	}
 	return &value
 }
-
-func clamp(v, lo, hi float32) float32 {
-	if v != v { // NaN
-		return lo
-	}
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}

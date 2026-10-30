@@ -1,0 +1,27 @@
+# EdgePilot agent log rotation.
+#
+# Installed at /etc/logrotate.d/edgepilot, owned root:root, mode 0644.
+#
+# Rotation is logrotate's job rather than the agent's, deliberately: it is the
+# mechanism that rotates every other log on the machine, an administrator
+# configures it in one place, and an agent with its own retention policy would
+# quietly disagree with that configuration.
+#
+# postrotate sends SIGHUP, and the agent reopens its file on SIGHUP. Without that
+# pairing the agent keeps writing to the renamed file and its logs disappear
+# from the path an operator is tailing. Not copytruncate: that loses whatever
+# the agent writes between the copy and the truncate.
+/var/log/edgepilot/agent.log {
+    weekly
+    maxsize 10M
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    sharedscripts
+    postrotate
+        systemctl kill --signal=HUP edgepilot-agent.service >/dev/null 2>&1 || true
+    endscript
+}

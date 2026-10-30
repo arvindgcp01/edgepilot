@@ -208,6 +208,7 @@ func (s *AgentService) Connect(stream v1.AgentService_ConnectServer) error {
 	// every device, and an UPDATE that changes nothing is still a write.
 	facts := domain.ReportedFacts{
 		Hostname:     hello.GetHostname(),
+		OSName:       hello.GetOsName(),
 		OSVersion:    hello.GetOsVersion(),
 		OSBuild:      hello.GetOsBuild(),
 		AgentVersion: hello.GetAgentVersion(),

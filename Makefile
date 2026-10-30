@@ -134,7 +134,7 @@ build-server: ## Build the server and epctl
 	done
 
 .PHONY: build-agent
-build-agent: ## Build the macOS agent for both architectures
+build-agent: ## Build the agent for macOS and Linux, both architectures
 	@if ! ls apps/agent/cmd/edgepilot-agent/*.go >/dev/null 2>&1; then \
 	  echo "  skip  agent (no sources yet)"; exit 0; \
 	fi; \
@@ -145,24 +145,36 @@ build-agent: ## Build the macOS agent for both architectures
 	     -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
 	     -o ../../bin/edgepilot-agent-$$arch ./cmd/edgepilot-agent) || exit 1; \
 	done; \
+	for arch in amd64 arm64; do \
+	  echo "  build bin/edgepilot-agent-linux-$$arch"; \
+	  (cd apps/agent && GOOS=linux GOARCH=$$arch CGO_ENABLED=0 go build -trimpath \
+	     -ldflags "-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
+	     -o ../../bin/edgepilot-agent-linux-$$arch ./cmd/edgepilot-agent) || exit 1; \
+	done; \
 	lipo -create -output bin/edgepilot-agent bin/edgepilot-agent-arm64 bin/edgepilot-agent-amd64 \
 	  2>/dev/null || echo "  note: lipo is macOS-only; per-arch binaries are in bin/"
 
 .PHONY: package-agent
-package-agent: build-agent ## Package the agent bundle Caddy serves at /install.sh and /dl
-	@rm -rf dist/edgepilot-agent dist/publish
-	@mkdir -p dist/edgepilot-agent dist/publish
+package-agent: build-agent ## Package the agent bundles Caddy serves at /install.sh and /dl
+	@rm -rf dist/edgepilot-agent dist/edgepilot-agent-linux dist/publish
+	@mkdir -p dist/edgepilot-agent dist/edgepilot-agent-linux dist/publish
 	@cp bin/edgepilot-agent-arm64 bin/edgepilot-agent-amd64 dist/edgepilot-agent/
 	@cp deployments/macos/install.sh \
 	    deployments/macos/ai.visionify.edgepilot.agent.plist \
 	    deployments/macos/edgepilot.newsyslog.conf dist/edgepilot-agent/
-	@chmod 0755 dist/edgepilot-agent/install.sh dist/edgepilot-agent/edgepilot-agent-*
+	@cp bin/edgepilot-agent-linux-amd64 bin/edgepilot-agent-linux-arm64 dist/edgepilot-agent-linux/
+	@cp deployments/linux/install.sh \
+	    deployments/linux/edgepilot-agent.service \
+	    deployments/linux/edgepilot.logrotate dist/edgepilot-agent-linux/
+	@chmod 0755 dist/edgepilot-agent/install.sh dist/edgepilot-agent/edgepilot-agent-* \
+	    dist/edgepilot-agent-linux/install.sh dist/edgepilot-agent-linux/edgepilot-agent-*
 # COPYFILE_DISABLE: bsdtar otherwise writes an AppleDouble ._ entry beside every
 # file, and those land in the extracted bundle on the customer's Mac.
 	@COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/publish/edgepilot-agent.tgz -C dist edgepilot-agent
-	@cp deployments/macos/bootstrap.sh dist/publish/install.sh
+	@COPYFILE_DISABLE=1 tar --no-xattrs -czf dist/publish/edgepilot-agent-linux.tgz -C dist edgepilot-agent-linux
+	@cp deployments/bootstrap.sh dist/publish/install.sh
 	@chmod 0755 dist/publish/install.sh
-	@cd dist/publish && shasum -a 256 edgepilot-agent.tgz > SHA256SUMS
+	@cd dist/publish && shasum -a 256 edgepilot-agent.tgz edgepilot-agent-linux.tgz > SHA256SUMS
 	@echo "  dist/publish/ ready — copy its contents to deployments/docker/agent-dist/ on the server"
 	@ls -l dist/publish
 
